@@ -36,7 +36,7 @@ test("protected routes lead to login and client registration is discoverable", a
   ).toBeVisible();
   await expect(page.getByLabel("Your name")).toBeVisible();
   await expect(
-    page.getByText("Bidders join through an invitation from their client."),
+    page.getByText("Bidder accounts are created by their client."),
   ).toBeVisible();
   expect(
     await page.evaluate(
@@ -57,7 +57,7 @@ test("password visibility and recovery navigation work", async ({ page }) => {
     page.getByRole("heading", { name: "Let’s get you back in." }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Send reset link" }),
+    page.getByRole("link", { name: "Back to sign in" }),
   ).toBeVisible();
 });
 test("invalid confirmation links show a recoverable error", async ({

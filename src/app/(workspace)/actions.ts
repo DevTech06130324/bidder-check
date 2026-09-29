@@ -105,30 +105,30 @@ export async function updateClient(form: FormData) {
       }),
   );
 }
-export async function inviteBidder(form: FormData) {
+export async function createBidder(form: FormData) {
   return perform(async () => {
     const { supabase } = await getContext();
     const admin = adminClient();
-    const email = z.email().parse(text(form, "email"));
-    const origin = process.env.APP_URL;
-    if (!origin) throw new Error("APP_URL is not configured.");
-    const { error } = await supabase.rpc("invite_bidder", {
+    const email = z.email().parse(text(form, "email")).toLowerCase();
+    const { data: reservation, error } = await supabase.rpc("invite_bidder", {
       p_workspace: text(form, "workspace_id"),
       p_email: email,
       p_name: text(form, "display_name"),
       p_rate: moneyToCents(text(form, "rate")),
     });
     if (error) throw new Error(error.message);
-    const { error: inviteError } = await admin.auth.admin.inviteUserByEmail(
+    if (!reservation)
+      throw new Error("Account reservation failed. Please retry.");
+    const { error: createError } = await admin.auth.admin.createUser({
+      id: reservation,
       email,
-      {
-        redirectTo: `${origin}/auth/confirm`,
-        data: { display_name: text(form, "display_name") },
-      },
-    );
-    if (inviteError)
+      password: "123456",
+      email_confirm: true,
+      user_metadata: { display_name: text(form, "display_name") },
+    });
+    if (createError)
       throw new Error(
-        `Invitation reserved, but email delivery failed: ${inviteError.message}. Retry from the invitations list.`,
+        `Account creation could not finish: ${createError.message}. Retry from pending accounts.`,
       );
   });
 }

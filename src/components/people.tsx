@@ -2,13 +2,13 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Search, ArrowUpRight, Mail, Users } from "lucide-react";
+import { Plus, Search, ArrowUpRight, RotateCcw, Users } from "lucide-react";
 import { toast } from "sonner";
 import type { WorkspaceData } from "@/lib/data";
 import type { Row } from "@/lib/database.types";
 import { usd, initials } from "@/lib/domain";
 import {
-  inviteBidder,
+  createBidder,
   updateBidder,
   updateClient,
 } from "@/app/(workspace)/actions";
@@ -30,7 +30,7 @@ import {
   SaveButton,
   EmptyState,
 } from "./common";
-export function InviteDialog({
+export function CreateBidderDialog({
   data,
   invitation,
 }: {
@@ -47,26 +47,28 @@ export function InviteDialog({
           variant={invitation ? "outline" : "default"}
           size={invitation ? "sm" : "default"}
         >
-          {invitation ? <Mail size={15} /> : <Plus size={16} />}{" "}
-          {invitation ? "Retry invitation" : "Invite bidder"}
+          {invitation ? <RotateCcw size={15} /> : <Plus size={16} />}{" "}
+          {invitation ? "Retry creation" : "Add bidder"}
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Invite a new teammate</DialogTitle>
+          <DialogTitle>Add a bidder account</DialogTitle>
           <DialogDescription>
-            They’ll receive an email to set their password and join your
-            workspace.
+            Their initial password is 123456. Share their sign-in details
+            directly; they can change their password in Settings.
           </DialogDescription>
         </DialogHeader>
         <form
           className="space-y-4"
           action={(form) =>
             start(async () => {
-              const result = await inviteBidder(form);
+              const result = await createBidder(form);
               if (result.error) toast.error(result.error);
               else {
-                toast.success("Invitation sent");
+                toast.success(
+                  "Bidder account created. Initial password: 123456",
+                );
                 setOpen(false);
                 router.refresh();
               }
@@ -112,7 +114,7 @@ export function InviteDialog({
             placeholder="Set later"
           />
           <div className="flex justify-end pt-2">
-            <SaveButton pending={pending} label="Send invitation" />
+            <SaveButton pending={pending} label="Create bidder" />
           </div>
         </form>
       </DialogContent>
@@ -215,7 +217,7 @@ export function People({ data }: { data: WorkspaceData }) {
         title="Better work, together."
         description="A clear view of your team, their profiles, and their progress."
       >
-        <InviteDialog data={data} />
+        <CreateBidderDialog data={data} />
       </PageHeading>
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         {[
@@ -228,7 +230,7 @@ export function People({ data }: { data: WorkspaceData }) {
             value: data.resumes.filter((r) => !r.archived).length,
           },
           {
-            label: "Pending invitations",
+            label: "Pending accounts",
             value: data.invitations.filter((i) => !i.accepted_at).length,
           },
         ].map((s) => (
@@ -278,7 +280,7 @@ export function People({ data }: { data: WorkspaceData }) {
         {!people.length ? (
           <EmptyState
             title="Your team starts here"
-            description="Invite your first bidder, then give them a resume profile and a rate to get started."
+            description="Add your first bidder, then give them a resume profile and a rate to get started."
           />
         ) : (
           <div className="divide-y">
@@ -343,7 +345,7 @@ export function People({ data }: { data: WorkspaceData }) {
       </section>
       {data.invitations.some((i) => !i.accepted_at) && (
         <section className="panel mt-6 p-5">
-          <h2 className="mb-4 font-semibold">Pending invitations</h2>
+          <h2 className="mb-4 font-semibold">Pending accounts</h2>
           <div className="divide-y">
             {data.invitations
               .filter((i) => !i.accepted_at)
@@ -359,7 +361,7 @@ export function People({ data }: { data: WorkspaceData }) {
                       {new Date(i.expires_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <InviteDialog data={data} invitation={i} />
+                  <CreateBidderDialog data={data} invitation={i} />
                 </div>
               ))}
           </div>

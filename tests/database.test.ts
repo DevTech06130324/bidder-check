@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { beforeAll, afterAll, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 let db: PGlite;
 const client = "00000000-0000-4000-8000-000000000001";
@@ -16,7 +16,7 @@ beforeAll(async () => {
   db = new PGlite();
   await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
  create schema auth; create schema storage;
- create table auth.users(id uuid primary key, email text, raw_user_meta_data jsonb default '{}', email_confirmed_at timestamptz);
+ create table auth.users(id uuid primary key, email text, raw_user_meta_data jsonb default '{}', raw_app_meta_data jsonb default '{}', email_confirmed_at timestamptz);
  create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
  create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
  create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text,metadata jsonb);
@@ -24,9 +24,11 @@ beforeAll(async () => {
  grant usage on schema auth, storage to authenticated, service_role;
  grant all on storage.objects to authenticated,service_role;
  `);
-  await db.exec(
-    readFileSync("supabase/migrations/202609290001_platform.sql", "utf8"),
-  );
+  for (const file of readdirSync("supabase/migrations")
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
+  }
   await db.query(
     "insert into auth.users(id,email) values ($1,'client@test.com'),($2,'other@test.com')",
     [client, other],
@@ -41,7 +43,11 @@ beforeAll(async () => {
   );
   await db.exec("reset role");
   await db.query(
-    "insert into auth.users(id,email) values ($1,'bidder@test.com')",
+    "update public.invitations set id=$1 where email='bidder@test.com'",
+    [bidder],
+  );
+  await db.query(
+    "insert into auth.users(id,email,raw_app_meta_data) select $1,'bidder@test.com',jsonb_build_object('bidder_provisioning_id',id) from public.invitations where email='bidder@test.com'",
     [bidder],
   );
   await asUser(client);
@@ -211,6 +217,12 @@ it("requires finalized evidence, snapshots rate, and reverses earnings", async (
     )
   ).rows;
   expect(rows[0]).toEqual({ rate_cents: 125, applied: true });
+  await expect(
+    db.query(
+      "select public.set_applied($1,false,null,'Bidder cannot correct earnings')",
+      [bid],
+    ),
+  ).rejects.toThrow("Access denied");
   expect(
     (await db.query("select * from public.bid_events where event='applied'"))
       .rows,
@@ -298,7 +310,11 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
   );
   await db.exec("reset role");
   await db.query(
-    "insert into auth.users(id,email) values($1,'peer@test.com')",
+    "update public.invitations set id=$1 where email='peer@test.com'",
+    [peer],
+  );
+  await db.query(
+    "insert into auth.users(id,email,raw_app_meta_data) select $1,'peer@test.com',jsonb_build_object('bidder_provisioning_id',id) from public.invitations where email='peer@test.com'",
     [peer],
   );
   await asUser(client);
@@ -374,6 +390,46 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
       [fresh, r2],
     ),
   ).rejects.toThrow("resume assignment");
+});
+it("bidder provisioning requires a server-assigned Auth identity and rejects signup metadata", async () => {
+  await asUser(client);
+  await db.query(
+    "select public.invite_bidder($1,'reserved@test.com','Reserved',100)",
+    [workspace],
+  );
+  await db.exec("reset role");
+  const reserved = (
+    await db.query<{ id: string }>(
+      "select id from public.invitations where email='reserved@test.com'",
+    )
+  ).rows[0].id;
+  await expect(
+    db.query(
+      "insert into auth.users(id,email,raw_user_meta_data) values(gen_random_uuid(),'reserved@test.com',$1)",
+      [JSON.stringify({ bidder_provisioning_id: reserved })],
+    ),
+  ).rejects.toThrow("reserved");
+  const created = reserved;
+  await db.query(
+    "insert into auth.users(id,email,email_confirmed_at) values($1,'reserved@test.com',now())",
+    [created],
+  );
+  expect(
+    (
+      await db.query<{ role: string }>(
+        "select role from public.profiles where id=$1",
+        [created],
+      )
+    ).rows[0].role,
+  ).toBe("bidder");
+  expect(
+    (
+      await db.query<{ accepted_at: string }>(
+        "select accepted_at from public.invitations where id=$1",
+        [reserved],
+      )
+    ).rows[0].accepted_at,
+  ).not.toBeNull();
 });
 it("admin can manage clients and archived client access is revoked", async () => {
   await db.exec("reset role");

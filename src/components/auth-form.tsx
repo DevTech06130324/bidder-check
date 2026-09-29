@@ -90,11 +90,23 @@ export function AuthForm({
               autoComplete={
                 isSignup || isUpdate ? "new-password" : "current-password"
               }
-              placeholder="At least 8 characters"
+              placeholder={
+                mode === "login" ? "Your password" : "At least 8 characters"
+              }
               className="pr-10"
               {...register("password", {
                 required: "Password is required.",
-                minLength: { value: 8, message: "Use at least 8 characters." },
+                minLength: {
+                  value: mode === "login" ? 6 : 8,
+                  message:
+                    mode === "login"
+                      ? "Use at least 6 characters."
+                      : "Use at least 8 characters.",
+                },
+                maxLength: {
+                  value: 128,
+                  message: "Use at most 128 characters.",
+                },
               })}
             />
             <button
@@ -166,7 +178,7 @@ export function AuthForm({
         <p className="text-center text-xs leading-relaxed text-muted-foreground">
           Creating a client account? You’re in the right place.
           <br />
-          Bidders join through an invitation from their client.
+          Bidder accounts are created by their client.
         </p>
       )}
     </form>

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { redirect } from "next/navigation";
 const credentials = z.object({
   email: z.email(),
-  password: z.string().min(8, "Use at least 8 characters.").max(128),
+  password: z.string().min(6, "Use at least 6 characters.").max(128),
   name: z.string().max(100).optional(),
 });
 export async function authenticate(
@@ -12,33 +12,20 @@ export async function authenticate(
   values: { email: string; password: string; name?: string },
 ) {
   const supabase = await createClient();
-  const origin = process.env.APP_URL;
-  if (!origin)
-    return {
-      error: "Authentication is not configured. Contact your administrator.",
-    };
   if (mode === "forgot") {
-    const parsed = z.email().safeParse(values.email);
-    if (!parsed.success) return { error: "Enter a valid email address." };
-    const { error } = await supabase.auth.resetPasswordForEmail(values.email, {
-      redirectTo: `${origin}/auth/callback?next=/auth/update-password`,
-    });
-    return error
-      ? { error: error.message }
-      : {
-          message:
-            "If that account exists, a password reset link is on its way.",
-        };
+    return {
+      error: "Contact your client or administrator to recover your account.",
+    };
   }
   if (mode === "update") {
-    if (values.password.length < 8)
-      return { error: "Use at least 8 characters." };
+    if (values.password.length < 8 || values.password.length > 128)
+      return { error: "Use between 8 and 128 characters." };
     const {
       data: { user },
     } = await supabase.auth.getUser();
     if (!user)
       return {
-        error: "Your link has expired. Request a new password reset email.",
+        error: "Please sign in before changing your password.",
       };
     const { error } = await supabase.auth.updateUser({
       password: values.password,
@@ -49,20 +36,21 @@ export async function authenticate(
   const parsed = credentials.safeParse(values);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   if (mode === "signup") {
-    const { error } = await supabase.auth.signUp({
+    if (values.password.length < 8)
+      return { error: "Use at least 8 characters." };
+    const { data, error } = await supabase.auth.signUp({
       email: values.email,
       password: values.password,
       options: {
         data: { display_name: values.name },
-        emailRedirectTo: `${origin}/auth/callback`,
       },
     });
-    return error
-      ? { error: error.message }
-      : {
-          message:
-            "Check your email to verify your account, then sign in to your workspace.",
-        };
+    if (error) return { error: error.message };
+    if (data.session) redirect("/dashboard");
+    return {
+      error:
+        "Account created, but immediate sign-in is unavailable. Contact your administrator.",
+    };
   }
   const { error } = await supabase.auth.signInWithPassword({
     email: values.email,

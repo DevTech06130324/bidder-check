@@ -16,36 +16,21 @@ Fill `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABA
 
 ## Supabase setup
 
-Apply `supabase/migrations/202609290001_platform.sql` to a **new/empty project** using the Supabase CLI (`supabase login`, `supabase link --project-ref YOUR_REF`, `supabase db push`) or SQL editor. The supplied production project ref is `aizorlyfggwbewetnwqm`. Inspect an existing database before applying this initial migration. Never apply production migrations as part of the Vercel build.
+Apply all checked-in migrations in order using the Supabase CLI (`supabase login`, `supabase link --project-ref YOUR_REF`, `supabase db push`). The initial migration requires an empty application schema. Production is `aizorlyfggwbewetnwqm`; isolated staging is `kdmvludtvhuuewmhurpw`. Never apply production migrations as part of the Vercel build.
 
-Enable email confirmation and configure custom SMTP (default deployment choice: Resend with a verified sender domain). Set Site URL to the deployed app origin and allowlist `/auth/confirm` and `/auth/callback` for production, staging and localhost as appropriate. Each preview must use staging Supabase credentials, never production.
+Email confirmation is disabled, as requested. Client registration immediately signs the user into a new workspace. SMTP is not required. In Users, clients/admins add a bidder by name and email, with initial password `123456`. Bidders can change their password through Settings → Change password (new passwords require 8–128 characters). Share initial credentials directly. Forgotten-password guidance directs users to their client/administrator; no recovery email is sent.
 
-Customize the Supabase email templates to use these links. `.SiteURL` must match the app environment:
+Bidder creation first reserves the email under the signed-in manager's database permissions, then uses server-only Auth administration to create the account with the reserved UUID. Public signup cannot select an Auth user ID or consume this reservation; editable signup metadata cannot assign roles. The legacy `invitations` table stores these account-creation reservations, and failed creation can be retried from Pending accounts. An email cannot belong to multiple clients or roles. Removing users archives them and preserves history.
 
-```html
-<!-- Confirm signup -->
-<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup"
-  >Confirm email</a
->
-<!-- Invite user -->
-<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite"
-  >Accept invitation</a
->
-<!-- Reset password -->
-<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery"
-  >Reset password</a
->
-```
+Set each environment's Site URL to its deployed origin. Preview uses staging credentials, never production. Do not push the local `supabase/config.toml` unchanged to production because its Site URL is localhost.
 
-Client registrations create their own workspace. Bidder invitations are reserved in the database before Auth sends the email; database ownership records, not editable user metadata, determine their role. An email cannot belong to more than one client or role. Users removed from the workspace are archived, preserving history. New accounts in Auth must be created after the migration is installed.
-
-Register and verify `david.chan.mdev@gmail.com`, then run:
+Register the designated administrator, then run the explicit bootstrap:
 
 ```sh
 npm run admin:bootstrap -- david.chan.mdev@gmail.com
 ```
 
-The script refuses unknown, unverified, and bidder accounts. It does not use a first-user administrator shortcut.
+The script refuses unknown, unconfirmed, and bidder accounts. With email confirmation disabled, Supabase confirms new accounts automatically. It does not use a first-user administrator shortcut. `david.chan.mdev@gmail.com` has already been bootstrapped in production.
 
 ## Earnings and evidence
 
@@ -62,16 +47,18 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Database tests execute the actual migration in PGlite PostgreSQL with test equivalents of Supabase's Auth and Storage schemas and `auth.uid()`. They exercise RLS with an `authenticated` database role. This does not simulate Supabase Auth email delivery or the hosted Storage HTTP service. Those require a staging end-to-end smoke test.
+Database tests execute all migrations in PGlite PostgreSQL with test equivalents of Supabase's Auth and Storage schemas and `auth.uid()`. They exercise RLS with an `authenticated` database role. Hosted Auth and Storage HTTP are checked separately by `scripts/hosted-smoke.mjs`.
 
 Browser tests exercise real authentication pages and the workspace components using synthetic fixtures in an isolated Vite server (`tests/preview`). Fixture mutation handlers deliberately refuse writes. This verifies layout, filters, navigation, theme changes and accessibility; it does not replace a hosted authenticated workflow test. The production app never serves these fixtures. On restricted Windows hosts, browser tests may need permission to stop their own server processes.
 
 `node scripts/generate-types.mjs` generates TypeScript types from the executable migration without Docker. After a local Supabase startup, `npm run db:types` can regenerate from the live schema.
 
+For real staging workflows, set staging keys in ignored `.env.staging`, run the application against those credentials on port 3002, then run `node --env-file=.env.staging scripts/hosted-smoke.mjs`. `SMOKE_APP_URL` can target the deployed staging app; protected previews also need `SMOKE_VERCEL_BYPASS`. The script refuses the production database, creates synthetic accounts, and removes its own accounts/files afterward. Reports are saved in ignored `test-results/`.
+
 ## Vercel
 
 Import `DevTech06130324/bidder-check`, select Next.js, root `./`, build `npm run build`, default output directory, Node 22. Add the four environment variables separately to Production and Preview. Use isolated staging Supabase for Preview. Set `APP_URL` to the corresponding trusted origin. Apply migrations before publishing the app. Production branch is `main`.
 
-Before launch verify: client confirmation, bidder invitation/password setup, tenant isolation with two clients, resume download, screenshot upload/application, client correction/reapplication, and admin reporting. Check Vercel runtime logs without logging personal profile fields or file contents. Roll back application deployments through Vercel; database migrations require separately reviewed forward fixes.
+Before launch verify: immediate client signup, bidder creation/default-password login/password change, tenant isolation with two clients, resume download, screenshot upload/application, client correction/reapplication, and admin reporting. Check Vercel runtime logs without logging personal profile fields or file contents. Roll back application deployments through Vercel; database migrations require separately reviewed forward fixes.
 
 Paid templates, scraping, job auto-apply, payroll, and payment transfers are outside this release.

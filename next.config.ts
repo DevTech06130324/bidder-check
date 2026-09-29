@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Avoid printing passwords passed to authentication actions in development.
+  logging: { serverFunctions: false },
   async headers() {
     return [
       {

@@ -732,38 +732,40 @@ export function BidWorkspace({
                   />
                 )}
                 {active.applied ? (
-                  <div className="space-y-3 border-t pt-5">
-                    <h3 className="text-sm font-semibold">
-                      Correct application status
-                    </h3>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      Marking this unapplied removes its earnings. New proof is
-                      required before it can be applied again.
-                    </p>
-                    <Textarea
-                      aria-label="Correction reason"
-                      placeholder="Why is this application being corrected?"
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                    />
-                    <Button
-                      variant="outline"
-                      disabled={pending || !reason.trim()}
-                      onClick={() =>
-                        start(async () => {
-                          const result = await unapplyBid(active.id, reason);
-                          if (result.error) toast.error(result.error);
-                          else {
-                            toast.success("Marked unapplied");
-                            setSelected(undefined);
-                            router.refresh();
-                          }
-                        })
-                      }
-                    >
-                      <RotateCcw size={14} /> Mark unapplied
-                    </Button>
-                  </div>
+                  data.profile.role !== "bidder" ? (
+                    <div className="space-y-3 border-t pt-5">
+                      <h3 className="text-sm font-semibold">
+                        Correct application status
+                      </h3>
+                      <p className="text-xs leading-5 text-muted-foreground">
+                        Marking this unapplied removes its earnings. New proof
+                        is required before it can be applied again.
+                      </p>
+                      <Textarea
+                        aria-label="Correction reason"
+                        placeholder="Why is this application being corrected?"
+                        value={reason}
+                        onChange={(e) => setReason(e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        disabled={pending || !reason.trim()}
+                        onClick={() =>
+                          start(async () => {
+                            const result = await unapplyBid(active.id, reason);
+                            if (result.error) toast.error(result.error);
+                            else {
+                              toast.success("Marked unapplied");
+                              setSelected(undefined);
+                              router.refresh();
+                            }
+                          })
+                        }
+                      >
+                        <RotateCcw size={14} /> Mark unapplied
+                      </Button>
+                    </div>
+                  ) : null
                 ) : (
                   <div className="space-y-4 border-t pt-5">
                     <div>

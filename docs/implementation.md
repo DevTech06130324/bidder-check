@@ -9,8 +9,9 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - [x] Resume management
 - [x] Bid workflow
 - [x] Dashboard and earnings
-- [x] Local verification (19 unit/database tests; 14 desktop/mobile browser tests; lint, typecheck and production build)
-- [ ] Hosted migration, SMTP configuration, admin bootstrap and Vercel deployment (credentials required)
+- [x] Local verification (20 unit/database tests; 14 desktop/mobile browser tests; lint, typecheck and production build)
+- [x] Initial production/staging migrations, admin bootstrap and Vercel deployment
+- [ ] Direct-account update: hosted workflow verification and production release
 
 ## Decisions and evidence
 
@@ -24,6 +25,10 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - Pinned TanStack Table to version 8 and Zod to version 4 to match the implemented APIs. Node 22 is pinned for deployment and available through the local dev dependency.
 - Independent review found four issues, all fixed with regression coverage: premature invitation acceptance/resend failure; cross-workspace reservation race (email advisory lock plus ownership-guarded upsert); raw RPC URL canonicalization bypass; browser/server timezone mismatch.
 - Browser accessibility tests exposed insufficient muted-text/avatar contrast; tokens were corrected. Playwright's test teardown requires unsandboxed process cleanup on this Windows host; the completed run exited successfully with 14/14 tests passing.
-- Read-only hosted check: supplied Supabase endpoint is reachable, but `public.profiles` is absent (PGRST205). Supabase CLI lacks an access token and Vercel CLI is logged out. No hosted resources were mutated.
+- Deployment access supplied: initial schema installed in production and isolated staging, all eight application tables have RLS, and storage is private. Production is https://bidder-check.vercel.app; staging is https://bidder-check-staging.vercel.app.
 - Designated initial administrator: david.chan.mdev@gmail.com. Bootstrap requires an existing verified account; no password is generated or committed.
 - Reviewer deferred hosted Auth/email, Storage HTTP, deployment configuration, production concurrency/performance, and screenshot semantic authenticity. Ruling: staging verifies hosted integrations; screenshots are checked for actual bytes, file signature and exact rejected-content reuse, not semantic proof of a real application.
+- User revised onboarding: no SMTP, no bidder invitations, initial bidder password `123456`, and immediate client signup without email verification. Settings supports password changes. Password recovery guidance refers users to their manager/administrator.
+- Hosted testing discovered that bidders could unapply their own bids. Migration 002 now requires manager authorization and a correction reason; the bidder UI hides that control. Regression tests fail before the fix and pass after it.
+- Migration 003 provisions bidders using a manager-reserved UUID passed through server-only Auth `createUser(id)`. Supabase applies custom app metadata after inserting the user, so trigger authorization cannot depend on it. Public signup cannot select an Auth ID or use editable metadata to claim a reservation.
+- Follow-up security review found no blocker in the new account flow. Production has zero legacy unconfirmed bidder accounts, so the old invitation conversion concern does not apply.

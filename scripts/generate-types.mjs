@@ -1,15 +1,17 @@
 import { PGlite } from "@electric-sql/pglite";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 const db = new PGlite();
 await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create schema storage;
-create table auth.users(id uuid primary key,email text,raw_user_meta_data jsonb default '{}',email_confirmed_at timestamptz);
+create table auth.users(id uuid primary key,email text,raw_user_meta_data jsonb default '{}',raw_app_meta_data jsonb default '{}',email_confirmed_at timestamptz);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
 create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
 create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text,metadata jsonb);
 alter table storage.objects enable row level security;`);
-await db.exec(
-  readFileSync("supabase/migrations/202609290001_platform.sql", "utf8"),
-);
+for (const file of readdirSync("supabase/migrations")
+  .filter((f) => f.endsWith(".sql"))
+  .sort()) {
+  await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
+}
 const map = (type) =>
   /\[\]$/.test(type)
     ? `${map(type.slice(0, -2))}[]`
