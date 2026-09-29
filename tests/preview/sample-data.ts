@@ -1,0 +1,101 @@
+import type { WorkspaceData } from "@/lib/data";
+const now = new Date().toISOString();
+const profile = {
+  id: "client",
+  display_name: "Alex Morgan",
+  email: "alex@example.test",
+  role: "client",
+  archived: false,
+  created_at: now,
+};
+const people = ["Jamie Parker", "Taylor Reed", "Sam Rivera"].map((name, i) => ({
+  id: `bidder-${i}`,
+  display_name: name,
+  email: `bidder${i}@example.test`,
+  role: "bidder",
+  archived: false,
+  created_at: now,
+}));
+const bidders = people.map((p) => ({
+  user_id: p.id,
+  workspace_id: "workspace",
+  default_rate_cents: 125,
+  archived: false,
+}));
+const resumes = people.map((p, i) => ({
+  id: `resume-${i}`,
+  workspace_id: "workspace",
+  bidder_id: p.id,
+  identifier: ["ENG-01", "FULLSTACK-02", "DESIGN-03"][i],
+  candidate_name: p.display_name,
+  email: p.email,
+  phone: "+1 (555) 010-2000",
+  address: "Chicago, IL",
+  links: "https://example.test/portfolio",
+  instructions:
+    "Focus on remote roles. Use the attached resume and include the portfolio link.",
+  rate_override_cents: null,
+  file_id: null,
+  archived: false,
+  created_at: now,
+}));
+const companies = [
+  "Linear",
+  "Notion",
+  "Vercel",
+  "Figma",
+  "Stripe",
+  "Webflow",
+  "GitHub",
+  "Framer",
+  "Ramp",
+  "Retool",
+  "Loom",
+  "Supabase",
+];
+const roles = [
+  "Senior Frontend Engineer",
+  "Full Stack Developer",
+  "Product Engineer",
+  "UI Engineer",
+  "Software Engineer",
+  "Design Engineer",
+];
+export const fixture: WorkspaceData = {
+  profile,
+  workspaces: [
+    {
+      id: "workspace",
+      owner_id: "client",
+      name: "Northstar Studio",
+      timezone: "America/Chicago",
+      created_at: now,
+    },
+  ],
+  profiles: [profile, ...people],
+  bidders,
+  resumes,
+  invitations: [],
+  bids: companies.map((company, i) => ({
+    id: `bid-${i}`,
+    workspace_id: "workspace",
+    bidder_id: people[i % 3].id,
+    resume_id: resumes[i % 3].id,
+    company,
+    role_name: roles[i % 6],
+    url: `https://example.test/${i}`,
+    normalized_url: `https://example.test/${i}`,
+    source: ["LinkedIn", "Company website", "Indeed", "Wellfound"][i % 4],
+    arrangement: i % 3 === 0 ? "hybrid" : "remote",
+    job_status: "open",
+    applied: i % 3 !== 0,
+    found_at: new Date(Date.now() - i * 86400000).toISOString(),
+    applied_at: i % 3 !== 0 ? now : null,
+    first_applied_at: i % 3 !== 0 ? now : null,
+    rate_cents: i % 3 !== 0 ? 125 : null,
+    evidence_file_id: i % 3 !== 0 ? "file" : null,
+    rejected_hashes: [],
+    version: 0,
+    created_at: new Date(Date.now() - i * 86400000).toISOString(),
+  })),
+};

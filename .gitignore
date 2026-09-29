@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+.env*
+!.env.example
+.vercel/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.superpowers/
+.worktrees/
+supabase/.temp/
+supabase/.branches/

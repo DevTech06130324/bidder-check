@@ -1,0 +1,70 @@
+import { test, expect } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+test("dashboard has real component layout, responsive navigation, and no serious accessibility issues", async ({
+  page,
+}, testInfo) => {
+  await page.goto("http://127.0.0.1:3001/dashboard");
+  await expect(
+    page.getByRole("heading", { name: "Welcome back, Alex." }),
+  ).toBeVisible();
+  await expect(page.getByText("Total earnings", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  const scan = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa"])
+    .analyze();
+  expect(
+    scan.violations.filter((v) =>
+      ["serious", "critical"].includes(v.impact ?? ""),
+    ),
+  ).toEqual([]);
+  await page.screenshot({
+    path: `test-results/dashboard-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Toggle color theme" }).click();
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  await page.screenshot({
+    path: `test-results/dashboard-dark-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
+});
+test("bid table search, filters and details show the correct application", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await expect(
+    page.getByRole("heading", { name: "Your bid workspace." }),
+  ).toBeVisible();
+  await page.getByRole("textbox", { name: "Search bids" }).fill("Linear");
+  await expect(
+    page.getByRole("cell", { name: "Senior Frontend Engineer Linear" }),
+  ).toBeVisible();
+  await expect(page.getByText("1–1 of 1 bids")).toBeVisible();
+  await page
+    .getByRole("button", { name: "View Senior Frontend Engineer at Linear" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Senior Frontend Engineer" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Mark as applied" }),
+  ).toBeDisabled();
+});
+test("resume details and earnings render their scoped data", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/resumes");
+  await page.getByRole("button", { name: /ENG-01 Jamie Parker/ }).click();
+  await expect(
+    page.getByText("APPLICATION INSTRUCTIONS", { exact: true }),
+  ).toBeVisible();
+  await page.goto("http://127.0.0.1:3001/earnings");
+  await expect(
+    page.getByRole("heading", { name: "Every effort adds up." }),
+  ).toBeVisible();
+  await expect(page.getByText("$10.00").first()).toBeVisible();
+});
