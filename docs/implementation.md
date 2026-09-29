@@ -11,7 +11,7 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - [x] Dashboard and earnings
 - [x] Local verification (20 unit/database tests; 14 desktop/mobile browser tests; lint, typecheck and production build)
 - [x] Initial production/staging migrations, admin bootstrap and Vercel deployment
-- [ ] Direct-account update: hosted workflow verification and production release
+- [x] Direct-account update: eight hosted workflow checks passed; production release ready
 
 ## Decisions and evidence
 
@@ -32,3 +32,5 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - Hosted testing discovered that bidders could unapply their own bids. Migration 002 now requires manager authorization and a correction reason; the bidder UI hides that control. Regression tests fail before the fix and pass after it.
 - Migration 003 provisions bidders using a manager-reserved UUID passed through server-only Auth `createUser(id)`. Supabase applies custom app metadata after inserting the user, so trigger authorization cannot depend on it. Public signup cannot select an Auth ID or use editable metadata to claim a reservation.
 - Follow-up security review found no blocker in the new account flow. Production has zero legacy unconfirmed bidder accounts, so the old invitation conversion concern does not apply.
+- Full hosted Playwright journey passed on Vercel staging (2026-09-29): immediate signup; direct bidder creation/default-password login/password change; private resume upload/download; invalid screenshot rejection; screenshot application; direct HTTP tenant/storage/role restrictions; correction/new proof/original rate/concurrent retry behavior; earnings and archival. Synthetic users/files were removed afterward. Local report: `test-results/hosted-smoke.json` (ignored).
+- Production migrations 001–003 and immediate-signup configuration applied successfully. Git commit `ffd5474` is deployed READY in both environments; production deployment `dpl_4rJ8zXEdvLHPVYx72AkmES2sRcKF`. Local CLI uploads encountered connection timeouts, so release used the existing GitHub integration. No SMTP setup is required.

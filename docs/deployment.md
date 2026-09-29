@@ -2,7 +2,7 @@
 
 Production is deployed at https://bidder-check.vercel.app and isolated Preview at https://bidder-check-staging.vercel.app. Production uses Supabase `aizorlyfggwbewetnwqm`; staging uses `kdmvludtvhuuewmhurpw`. Both have the application schema and private Storage. The designated account `david.chan.mdev@gmail.com` has been assigned the admin role.
 
-The direct-account onboarding update is awaiting its final hosted smoke test and production release. It replaces emailed bidder invitations with manager-created accounts (initial password `123456`), supports password changes in Settings, and signs clients in immediately after registration. SMTP is outside the revised scope.
+The direct-account onboarding update is live. It replaces emailed bidder invitations with manager-created accounts (initial password `123456`), supports password changes in Settings, and signs clients in immediately after registration. SMTP is outside the revised scope. Production and staging have migrations 001–003, with all eight tables under RLS and a private file bucket.
 
 ## Required access
 
@@ -12,7 +12,7 @@ Use `.env.local` for local secrets; `.gitignore` excludes it. Keep secrets out o
 | -------------------------------------- | -------------------------------------------------------------------- |
 | `NEXT_PUBLIC_SUPABASE_URL`             | Supabase project URL (already provided locally)                      |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Public client key (already provided locally)                         |
-| `SUPABASE_SECRET_KEY`                  | Auth invitations and trusted screenshot verification                 |
+| `SUPABASE_SECRET_KEY`                  | Auth account creation and trusted screenshot verification            |
 | `APP_URL`                              | Trusted application origin; localhost in development                 |
 | `SUPABASE_ACCESS_TOKEN`                | Optional local deployment credential for Supabase Management API/CLI |
 | `VERCEL_TOKEN`                         | Optional local deployment credential for Vercel CLI                  |
@@ -30,4 +30,8 @@ Management/deployment tokens are not runtime variables and must not be sent to b
 7. Admin bootstrap is already complete. For another explicitly authorized administrator, register the account first, then run the bootstrap command with its email.
 8. Run `scripts/hosted-smoke.mjs` against staging: immediate signup, direct bidder creation, initial-password login/change, two-client isolation, private downloads, invalid/valid screenshot uploads, correction/reapplication, retry idempotency and archival. The script cleans its synthetic users and files. Check deployment logs without logging profile/file contents.
 
-Current local verification: 20 unit/database cases and 14 browser cases, plus lint/typecheck/build. Initial hosted verification confirmed Auth sessions, resume upload/download, and screenshot applications. The complete updated onboarding/earnings journey is the remaining release check. Email delivery is intentionally not tested or required.
+Verification on 2026-09-29: 20 unit/database cases, 14 desktop/mobile browser cases, lint, typecheck and production build all passed. The full hosted Vercel staging journey passed all eight workflow checkpoints: immediate signup; bidder creation/default-password login/password change; private resumes; invalid screenshot rejection; valid evidence and earnings; direct HTTP tenant/storage permissions; correction/new-proof/retry behavior; earnings and archival. Synthetic accounts/files were cleaned up. Email delivery is intentionally not tested or required.
+
+Application commit `ffd5474` reached READY in production (`dpl_4rJ8zXEdvLHPVYx72AkmES2sRcKF`) and staging (`dpl_Bc3FTUdih6hF46PtxXDyMiJUCeVS`). Subsequent documentation/test-runner commits may create equivalent deployments through the GitHub integration.
+
+Post-release production checks passed: protected routes redirect to login, updated signup/recovery pages render on mobile without overflow, Supabase reports immediate signup enabled, and the designated administrator remains active. Production checks were read-only; complete data-mutation journeys ran on staging.

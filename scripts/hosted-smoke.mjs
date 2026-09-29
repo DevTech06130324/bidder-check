@@ -10,7 +10,27 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 assert.equal(url, "https://kdmvludtvhuuewmhurpw.supabase.co", "Staging only");
 const origin = process.env.SMOKE_APP_URL ?? "http://localhost:3002";
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-const options = { auth: { persistSession: false, autoRefreshToken: false } };
+const options = {
+  auth: { persistSession: false, autoRefreshToken: false },
+  global: {
+    // Retry connection failures for reads and password sign-in only. Never
+    // retry creation, uploads, or mutations whose response may have been lost.
+    fetch: async (input, init) => {
+      const retryable =
+        !init?.method ||
+        init.method === "GET" ||
+        String(input).includes("/auth/v1/token?grant_type=password");
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await fetch(input, init);
+        } catch (error) {
+          if (!retryable || attempt >= 2) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      }
+    },
+  },
+};
 const admin = createClient(url, process.env.SUPABASE_SECRET_KEY, options);
 const client = createClient(url, key, options);
 const bidder = createClient(url, key, options);
