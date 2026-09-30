@@ -42,3 +42,12 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - Chicago Today / All / Custom table query is independent of reporting. Expanded columns include signed visible-row previews and inline screenshot upload. Trash is excluded from reporting and keeps evidence/history for restoration.
 - Review identified stale account reservations after email changes. Reproduced in PostgreSQL tests; migration 006 moves the reservation with its Auth account. Browser tests identified a TanStack render loop; memoized filtered rows resolve it.
 - Final local verification: 32 unit/database tests, 16 desktop/mobile browser tests, lint/type checking and production build passed. Hosted staging passed all 13 checkpoints and cleaned its generated data. See docs/deployment.md for release identifiers.
+
+## Spreadsheet editing and import decisions - 2026-09-30
+
+- Implemented the approved plan on an isolated feature branch in the existing clean checkout. Release to staging and production was already authorized; no additional permission gate was added.
+- Kept the 512 KiB clipboard limit. Mapped JSON allows 2 MiB and Server Actions allow 3 MiB to accommodate JSON escaping and repeated defaults; the tradeoff is a bounded larger HTTP request allowance.
+- The review's fixed-bidder workspace-selector issue was treated as important because it could strand an admin import. Embedded bidder imports now keep client and bidder fixed; an admin uses the unscoped Bids page to import for a different client.
+- Hosted behavior and maximum-size behavior remained release checks, not feature exclusions. The 500-row UI/database checks and full hosted workflow passed. Existing axe/mobile checks passed; these are not an unrestricted production load benchmark.
+- Fixed all four important review findings: URL canonicalization, keyboard focus initialization, selection reconciliation and copy bounds after row removal, and page clamping. Also fixed queued focus closing double-click editors. No deferred minor findings remain.
+- Final local results: 44 unit/database tests, 34 desktop/mobile browser checks, lint/type checking and production build passed. Hosted staging passed all 14 checkpoints and removed its synthetic data.

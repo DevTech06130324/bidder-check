@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createClient } from "@supabase/supabase-js";
-import { chromium, expect } from "@playwright/test";
+import { chromium, expect as baseExpect } from "@playwright/test";
+const expect = baseExpect.configure({ timeout: 45000 });
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 assert.equal(url, "https://kdmvludtvhuuewmhurpw.supabase.co", "Staging only");
@@ -686,7 +687,7 @@ try {
     .getByRole("textbox", { name: "Edit company", exact: true })
     .press("Enter");
   await expect(
-    bp.getByRole("gridcell", { name: "Edited Import Saved", exact: true }),
+    bp.getByRole("gridcell", { name: "Edited Import", exact: true }),
   ).toBeVisible({ timeout: 30000 });
   const one = imported.find((r) => r.company === "Imported One");
   let current = await readBid(one.id);

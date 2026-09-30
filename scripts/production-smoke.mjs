@@ -56,6 +56,37 @@ try {
   assert.deepEqual(profile, { role: "client", approval_status: "pending" });
   assert.deepEqual(ok(await client.from("workspaces").select("id")), []);
   assert.deepEqual(ok(await client.from("bids").select("id")), []);
+  for (const [name, args] of [
+    [
+      "update_bid_cell",
+      {
+        p_bid: randomUUID(),
+        p_field: "company",
+        p_value: "Denied",
+        p_version: 0,
+      },
+    ],
+    [
+      "validate_bid_import",
+      { p_resume: randomUUID(), p_date: "2025-10-01", p_rows: [] },
+    ],
+    [
+      "import_bids",
+      {
+        p_resume: randomUUID(),
+        p_date: "2025-10-01",
+        p_rows: [],
+        p_request: randomUUID(),
+      },
+    ],
+  ]) {
+    const result = await client.rpc(name, args);
+    assert.match(result.error?.message ?? "", /Access denied/);
+  }
+  assert.deepEqual(
+    ok(await client.from("bid_import_receipts").select("request_id")),
+    [],
+  );
   browser = await chromium.launch();
   const page = await browser.newPage();
   page.setDefaultTimeout(30000);
@@ -84,7 +115,7 @@ try {
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/login/);
   console.log(
-    "PASS production: designated admin active; signup metadata cannot grant roles/approval; pending access denied; approval routing, password change and sign-out work",
+    "PASS production: designated admin active; signup metadata cannot grant roles/approval; pending access denied including spreadsheet RPCs; approval routing, password change and sign-out work",
   );
 } finally {
   await browser?.close();

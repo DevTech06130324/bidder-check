@@ -13,6 +13,13 @@ import "@/app/globals.css";
 const pages: Record<string, React.ReactNode> = {
   "/dashboard": <Dashboard data={fixture} />,
   "/bids": <BidWorkspace data={fixture} />,
+  "/scoped-admin": (
+    <BidWorkspace
+      data={{ ...fixture, profile: { ...fixture.profile, role: "admin" } }}
+      embedded
+      bidderId="bidder-0"
+    />
+  ),
   "/resumes": <ResumeLibrary data={fixture} />,
   "/users": <People data={fixture} />,
   "/earnings": <Earnings data={fixture} />,

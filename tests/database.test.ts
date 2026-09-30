@@ -926,3 +926,46 @@ it("canonicalizes raw Unicode/spaces and rejects invalid HTTP authorities in dat
   ).rows[0].e;
   expect(errors[0].message).toMatch(/restore/);
 });
+it("commits the maximum 500-row batch once and preserves original results on retry", async () => {
+  await asUser(bidder);
+  const rid = (
+    await db.query<{ id: string }>(
+      "select id from public.resumes where identifier='SHEET-01'",
+    )
+  ).rows[0].id;
+  const rows = Array.from({ length: 500 }, (_, i) => ({
+    company: `Capacity ${i}`,
+    role_name: "Engineer",
+    url: `https://example.com/capacity/${i}`,
+    source: "",
+    arrangement: "remote",
+    job_status: "open",
+  }));
+  const args = [
+    rid,
+    JSON.stringify(rows),
+    "00000000-0000-4000-8000-000000000096",
+  ];
+  const first = (
+    await db.query<{ r: { ids: string[] } }>(
+      "select public.import_bids($1,'2025-10-01',$2::jsonb,$3) r",
+      args,
+    )
+  ).rows[0].r;
+  expect(first.ids).toHaveLength(500);
+  expect(
+    (
+      await db.query<{ r: unknown }>(
+        "select public.import_bids($1,'2025-10-01',$2::jsonb,$3) r",
+        args,
+      )
+    ).rows[0].r,
+  ).toEqual(first);
+  expect(
+    (
+      await db.query<{ n: number }>(
+        "select count(*)::int n from public.bids where url like 'https://example.com/capacity/%'",
+      )
+    ).rows[0].n,
+  ).toBe(500);
+});
