@@ -1,10 +1,9 @@
 "use client";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   ColumnDef,
-  flexRender,
   getCoreRowModel,
   getPaginationRowModel,
   getSortedRowModel,
@@ -64,6 +63,8 @@ import {
 } from "./common";
 import { ScreenshotCell } from "./screenshot-cell";
 import { FileUpload } from "./file-upload";
+import { BidGrid } from "./bid-grid";
+import { SheetsImport, type ImportResult } from "./sheets-import";
 type Bid = Row<"bids">;
 export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
   const [open, setOpen] = useState(false);
@@ -217,6 +218,37 @@ export function BidWorkspace({
   bidderId?: string;
 }) {
   const [search, setSearch] = useState("");
+  const [paste, setPaste] = useState<string | null>(null);
+  const editing = useRef(false);
+  const deferredRefresh = useRef(false);
+  const [isEditing, setIsEditing] = useState(false);
+  function editingChanged(value: boolean) {
+    editing.current = value;
+    setIsEditing(value);
+    if (!value)
+      setToday(formatInTimeZone(new Date(), BID_TIMEZONE, "yyyy-MM-dd"));
+    if (!value && deferredRefresh.current) {
+      deferredRefresh.current = false;
+      setRevision((n) => n + 1);
+    }
+  }
+  function imported(result: ImportResult) {
+    setPaste(null);
+    setSearch("");
+    setStatus("all");
+    setArrangement("all");
+    setSource("all");
+    setJob("all");
+    setTrash(false);
+    setBidder(result.bidder);
+    setResume(result.resume);
+    setDateMode("custom");
+    setFrom(result.date);
+    setTo(result.date);
+    setFilters(true);
+    setRevision((n) => n + 1);
+    router.refresh();
+  }
   const [status, setStatus] = useState("all");
   const [arrangement, setArrangement] = useState("all");
   const [resume, setResume] = useState("all");
@@ -245,9 +277,17 @@ export function BidWorkspace({
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     const update = () => {
+      if (editing.current) {
+        deferredRefresh.current = true;
+        return;
+      }
       setToday(formatInTimeZone(new Date(), BID_TIMEZONE, "yyyy-MM-dd"));
     };
     const focus = () => {
+      if (editing.current) {
+        deferredRefresh.current = true;
+        return;
+      }
       update();
       setRevision((n) => n + 1);
     };
@@ -261,9 +301,18 @@ export function BidWorkspace({
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
+      if (editing.current) {
+        deferredRefresh.current = true;
+        return;
+      }
       setLoading(true);
       const result = await getBidRows(dateMode, from, to, trash, bidderId);
       if (cancelled) return;
+      if (editing.current) {
+        deferredRefresh.current = true;
+        setLoading(false);
+        return;
+      }
       setLoading(false);
       if (result.error) {
         setLoadError(result.error);
@@ -280,6 +329,9 @@ export function BidWorkspace({
   }, [data, dateMode, from, to, trash, bidderId, today, revision]);
   const active = list.find((b) => b.id === selected);
   const timezone = BID_TIMEZONE;
+  const previousDay = new Date(`${today}T12:00:00Z`);
+  previousDay.setUTCDate(previousDay.getUTCDate() - 1);
+  const yesterday = previousDay.toISOString().slice(0, 10);
   const rows = useMemo(
     () =>
       list.filter(
@@ -293,8 +345,20 @@ export function BidWorkspace({
           Boolean(b.deleted_at) === trash &&
           dateInRange(
             b.found_at,
-            dateMode === "today" ? today : dateMode === "custom" ? from : "",
-            dateMode === "today" ? today : dateMode === "custom" ? to : "",
+            dateMode === "today"
+              ? today
+              : dateMode === "yesterday"
+                ? yesterday
+                : dateMode === "custom"
+                  ? from
+                  : "",
+            dateMode === "today"
+              ? today
+              : dateMode === "yesterday"
+                ? yesterday
+                : dateMode === "custom"
+                  ? to
+                  : "",
             timezone,
           ) &&
           `${b.company} ${b.role_name} ${b.url}`
@@ -306,6 +370,7 @@ export function BidWorkspace({
       trash,
       dateMode,
       today,
+      yesterday,
       bidderId,
       bidder,
       resume,
@@ -354,6 +419,7 @@ export function BidWorkspace({
       accessorKey: "found_at",
       header: ({ column }) => (
         <button
+          disabled={isEditing}
           onClick={() => column.toggleSorting()}
           className="flex items-center gap-1"
         >
@@ -379,12 +445,7 @@ export function BidWorkspace({
       accessorKey: "company",
       header: "Company name",
       cell: ({ row }) => (
-        <button
-          className="font-medium hover:text-primary"
-          onClick={() => openBid(row.original)}
-        >
-          {row.original.company}
-        </button>
+        <span className="font-medium">{row.original.company}</span>
       ),
     },
     { accessorKey: "role_name", header: "Role" },
@@ -446,6 +507,7 @@ export function BidWorkspace({
         <span className="capitalize">{String(getValue())}</span>
       ),
     },
+    { accessorKey: "job_status", header: "Job status" },
     {
       id: "screenshot",
       header: "Screenshot",
@@ -455,10 +517,7 @@ export function BidWorkspace({
       id: "actions",
       header: "Actions",
       cell: ({ row }) => (
-        <div className="flex flex-col gap-2">
-          {!row.original.deleted_at && (
-            <BidDialog data={data} bid={row.original} />
-          )}
+        <div className="flex gap-1">
           <Button
             variant="outline"
             size="sm"
@@ -483,6 +542,8 @@ export function BidWorkspace({
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: filteredRows,
+    getRowId: (row) => row.id,
+    autoResetPageIndex: false,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -491,208 +552,249 @@ export function BidWorkspace({
     getPaginationRowModel: getPaginationRowModel(),
     initialState: { pagination: { pageSize: 10 } },
   });
+  const filterKey = JSON.stringify([
+    search,
+    status,
+    arrangement,
+    resume,
+    bidder,
+    source,
+    job,
+    dateMode,
+    from,
+    to,
+    trash,
+  ]);
+  useEffect(() => {
+    table.setPageIndex(0);
+  }, [filterKey, table]);
   return (
     <>
+      {paste !== null && (
+        <SheetsImport
+          data={data}
+          initialText={paste}
+          bidderId={bidderId}
+          onClose={() => setPaste(null)}
+          onSuccess={imported}
+        />
+      )}
       {!embedded && (
         <PageHeading
           eyebrow="EVERY OPPORTUNITY, ACCOUNTED FOR"
           title="Your bid workspace."
           description="From the first find to the final click. Keep every application in view."
         >
+          <Button variant="outline" onClick={() => setPaste("")}>
+            Paste from Sheets
+          </Button>
           <BidDialog data={data} />
         </PageHeading>
       )}
       <section className="panel overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
-          <div className="flex gap-1">
-            {["all", "unapplied", "applied"].map((s) => (
+        <fieldset disabled={isEditing} className="min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
+            <div className="flex gap-1">
+              {["all", "unapplied", "applied"].map((s) => (
+                <Button
+                  key={s}
+                  variant={status === s ? "secondary" : "ghost"}
+                  size="sm"
+                  onClick={() => setStatus(s)}
+                  className="text-xs capitalize"
+                >
+                  {s === "all" ? "All bids" : s}
+                  <span className="ml-1 rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {
+                      rows.filter(
+                        (b) => s === "all" || b.applied === (s === "applied"),
+                      ).length
+                    }
+                  </span>
+                </Button>
+              ))}
+            </div>
+            {embedded && (
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setPaste("")}>
+                  Paste from Sheets
+                </Button>
+                <BidDialog data={data} />
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 px-5 pt-4">
+            {[
+              ["today", "Today (CT)"],
+              ["yesterday", "Yesterday (CT)"],
+              ["all", "All dates"],
+              ["custom", "Custom range"],
+            ].map(([value, label]) => (
               <Button
-                key={s}
-                variant={status === s ? "secondary" : "ghost"}
+                key={value}
                 size="sm"
-                onClick={() => setStatus(s)}
-                className="text-xs capitalize"
+                variant={dateMode === value ? "secondary" : "ghost"}
+                aria-pressed={dateMode === value}
+                onClick={() => setDateMode(value)}
               >
-                {s === "all" ? "All bids" : s}
-                <span className="ml-1 rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {
-                    rows.filter(
-                      (b) => s === "all" || b.applied === (s === "applied"),
-                    ).length
-                  }
-                </span>
+                {label}
               </Button>
             ))}
-          </div>
-          {embedded && <BidDialog data={data} />}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 px-5 pt-4">
-          {[
-            ["today", "Today (CT)"],
-            ["all", "All dates"],
-            ["custom", "Custom range"],
-          ].map(([value, label]) => (
             <Button
-              key={value}
               size="sm"
-              variant={dateMode === value ? "secondary" : "ghost"}
-              aria-pressed={dateMode === value}
-              onClick={() => setDateMode(value)}
+              className="ml-auto"
+              variant={trash ? "secondary" : "outline"}
+              aria-pressed={trash}
+              onClick={() => setTrash(!trash)}
             >
-              {label}
+              {trash ? "Back to active bids" : "Trash"}
             </Button>
-          ))}
-          <Button
-            size="sm"
-            className="ml-auto"
-            variant={trash ? "secondary" : "outline"}
-            aria-pressed={trash}
-            onClick={() => setTrash(!trash)}
-          >
-            {trash ? "Back to active bids" : "Trash"}
-          </Button>
-          {dateMode === "custom" && (
-            <div className="flex flex-wrap gap-3">
-              <Field
-                label="Found from (CT)"
-                type="date"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
+            {dateMode === "custom" && (
+              <div className="flex flex-wrap gap-3">
+                <Field
+                  label="Found from (CT)"
+                  type="date"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                />
+                <Field
+                  label="Found through (CT)"
+                  type="date"
+                  min={from}
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                />
+              </div>
+            )}
+          </div>
+          {loadError && (
+            <p role="alert" className="px-5 pt-3 text-sm text-destructive">
+              {loadError}{" "}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRevision((n) => n + 1)}
+              >
+                Retry
+              </Button>
+            </p>
+          )}
+          {loading && (
+            <p
+              role="status"
+              className="px-5 pt-2 text-xs text-muted-foreground"
+            >
+              Refreshing bids...
+            </p>
+          )}
+          <div className="flex gap-3 p-5">
+            <div className="relative flex-1">
+              <Search
+                className="absolute left-3 top-2.5 text-muted-foreground"
+                size={15}
               />
-              <Field
-                label="Found through (CT)"
-                type="date"
-                min={from}
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
+              <Input
+                aria-label="Search bids"
+                className="max-w-sm pl-9"
+                placeholder="Search company, role, or URL…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-          )}
-        </div>
-        {loadError && (
-          <p role="alert" className="px-5 pt-3 text-sm text-destructive">
-            {loadError}{" "}
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
-              onClick={() => setRevision((n) => n + 1)}
+              onClick={() => setFilters(!filters)}
+              aria-expanded={filters}
             >
-              Retry
+              <SlidersHorizontal size={14} /> Filters
             </Button>
-          </p>
-        )}
-        {loading && (
-          <p role="status" className="px-5 pt-2 text-xs text-muted-foreground">
-            Refreshing bids...
-          </p>
-        )}
-        <div className="flex gap-3 p-5">
-          <div className="relative flex-1">
-            <Search
-              className="absolute left-3 top-2.5 text-muted-foreground"
-              size={15}
-            />
-            <Input
-              aria-label="Search bids"
-              className="max-w-sm pl-9"
-              placeholder="Search company, role, or URL…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setFilters(!filters)}
-            aria-expanded={filters}
-          >
-            <SlidersHorizontal size={14} /> Filters
-          </Button>
-        </div>
-        {filters && (
-          <div className="grid gap-3 border-b px-5 pb-5 sm:grid-cols-3 xl:grid-cols-4">
-            <SelectField
-              label="Resume"
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-            >
-              <option value="all">All resumes</option>
-              {data.resumes.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.identifier}
-                </option>
-              ))}
-            </SelectField>
-            {data.profile.role !== "bidder" && !bidderId && (
+          {filters && (
+            <div className="grid gap-3 border-b px-5 pb-5 sm:grid-cols-3 xl:grid-cols-4">
               <SelectField
-                label="Bidder"
-                value={bidder}
-                onChange={(e) => setBidder(e.target.value)}
+                label="Resume"
+                value={resume}
+                onChange={(e) => setResume(e.target.value)}
               >
-                <option value="all">All bidders</option>
-                {data.bidders.map((b) => (
-                  <option key={b.user_id} value={b.user_id}>
-                    {
-                      data.profiles.find((p) => p.id === b.user_id)
-                        ?.display_name
-                    }
+                <option value="all">All resumes</option>
+                {data.resumes.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.identifier}
                   </option>
                 ))}
               </SelectField>
-            )}
-            <SelectField
-              label="Work arrangement"
-              value={arrangement}
-              onChange={(e) => setArrangement(e.target.value)}
-            >
-              <option value="all">All arrangements</option>
-              {["remote", "onsite", "hybrid"].map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </SelectField>
-            <SelectField
-              label="Job status"
-              value={job}
-              onChange={(e) => setJob(e.target.value)}
-            >
-              <option value="all">All jobs</option>
-              <option value="open">Open</option>
-              <option value="closed">Closed</option>
-            </SelectField>
-            <SelectField
-              label="Jobsite source"
-              value={source}
-              onChange={(e) => setSource(e.target.value)}
-            >
-              <option value="all">All sources</option>
-              {[...new Set(data.bids.map((b) => b.source))]
-                .filter(Boolean)
-                .map((s) => (
+              {data.profile.role !== "bidder" && !bidderId && (
+                <SelectField
+                  label="Bidder"
+                  value={bidder}
+                  onChange={(e) => setBidder(e.target.value)}
+                >
+                  <option value="all">All bidders</option>
+                  {data.bidders.map((b) => (
+                    <option key={b.user_id} value={b.user_id}>
+                      {
+                        data.profiles.find((p) => p.id === b.user_id)
+                          ?.display_name
+                      }
+                    </option>
+                  ))}
+                </SelectField>
+              )}
+              <SelectField
+                label="Work arrangement"
+                value={arrangement}
+                onChange={(e) => setArrangement(e.target.value)}
+              >
+                <option value="all">All arrangements</option>
+                {["remote", "onsite", "hybrid"].map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
                 ))}
-            </SelectField>
-            <Button
-              variant="ghost"
-              className="self-end"
-              onClick={() => {
-                setResume("all");
-                setBidder(bidderId ?? "all");
-                setArrangement("all");
-                setJob("all");
-                setSource("all");
-                setFrom("");
-                setTo("");
-                setSearch("");
-              }}
-            >
-              Clear filters
-            </Button>
-          </div>
-        )}
+              </SelectField>
+              <SelectField
+                label="Job status"
+                value={job}
+                onChange={(e) => setJob(e.target.value)}
+              >
+                <option value="all">All jobs</option>
+                <option value="open">Open</option>
+                <option value="closed">Closed</option>
+              </SelectField>
+              <SelectField
+                label="Jobsite source"
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+              >
+                <option value="all">All sources</option>
+                {[...new Set(data.bids.map((b) => b.source))]
+                  .filter(Boolean)
+                  .map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+              </SelectField>
+              <Button
+                variant="ghost"
+                className="self-end"
+                onClick={() => {
+                  setResume("all");
+                  setBidder(bidderId ?? "all");
+                  setArrangement("all");
+                  setJob("all");
+                  setSource("all");
+                  setFrom("");
+                  setTo("");
+                  setSearch("");
+                }}
+              >
+                Clear filters
+              </Button>
+            </div>
+          )}
+        </fieldset>
         {!filteredRows.length ? (
           <EmptyState
             title={
@@ -708,51 +810,34 @@ export function BidWorkspace({
           />
         ) : (
           <>
-            <div
-              className="overflow-x-auto"
-              tabIndex={0}
-              role="region"
-              aria-label="Bid table, scroll horizontally for all columns"
-            >
-              <table className="w-full text-left text-xs">
-                <thead className="border-y bg-background/70">
-                  {table.getHeaderGroups().map((group) => (
-                    <tr key={group.id}>
-                      {group.headers.map((header) => (
-                        <th
-                          key={header.id}
-                          className="whitespace-nowrap px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
-                        >
-                          {header.isPlaceholder
-                            ? null
-                            : flexRender(
-                                header.column.columnDef.header,
-                                header.getContext(),
-                              )}
-                        </th>
-                      ))}
-                    </tr>
-                  ))}
-                </thead>
-                <tbody className="divide-y">
-                  {table.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className="hover:bg-background/60">
-                      {row.getVisibleCells().map((cell) => (
-                        <td
-                          key={cell.id}
-                          className="whitespace-nowrap px-5 py-4"
-                        >
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext(),
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <BidGrid
+              key={JSON.stringify([
+                table.getState().pagination.pageIndex,
+                dateMode === "today" || dateMode === "yesterday" ? today : "",
+                sorting,
+                search,
+                status,
+                arrangement,
+                resume,
+                bidder,
+                source,
+                job,
+                dateMode,
+                from,
+                to,
+                trash,
+              ])}
+              table={table}
+              data={data}
+              onRow={(row) =>
+                setList((current) =>
+                  current.map((b) => (b.id === row.id ? row : b)),
+                )
+              }
+              onBusy={editingChanged}
+              onPaste={setPaste}
+              onOpen={openBid}
+            />
             <div className="flex items-center justify-between border-t px-5 py-4 text-xs text-muted-foreground">
               <span>
                 {table.getState().pagination.pageIndex * 10 + 1}–
@@ -767,7 +852,7 @@ export function BidWorkspace({
                   aria-label="Previous page"
                   size="icon-sm"
                   variant="outline"
-                  disabled={!table.getCanPreviousPage()}
+                  disabled={isEditing || !table.getCanPreviousPage()}
                   onClick={() => table.previousPage()}
                 >
                   <ChevronLeft size={14} />
@@ -779,7 +864,7 @@ export function BidWorkspace({
                   aria-label="Next page"
                   size="icon-sm"
                   variant="outline"
-                  disabled={!table.getCanNextPage()}
+                  disabled={isEditing || !table.getCanNextPage()}
                   onClick={() => table.nextPage()}
                 >
                   <ChevronRight size={14} />

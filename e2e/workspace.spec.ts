@@ -44,7 +44,7 @@ test("bid table search, filters and details show the correct application", async
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Search bids" }).fill("Linear");
   await expect(
-    page.getByRole("cell", { name: "Linear", exact: true }),
+    page.getByRole("gridcell", { name: "Linear", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("1–1 of 1 bids")).toBeVisible();
   expect(
@@ -90,6 +90,7 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
     page.getByRole("button", { name: "Today (CT)", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("columnheader")).toHaveText([
+    "#",
     "Added date (CT)",
     "Resume ID",
     "Company name",
@@ -100,6 +101,7 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
     "Applied status",
     "Applied time (CT)",
     "Work arrangement",
+    "Job status",
     "Screenshot",
     "Actions",
   ]);
@@ -108,4 +110,81 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
   await expect(page.getByText("1\u201310 of 12 bids")).toBeVisible();
   await page.getByRole("button", { name: "Add bid", exact: true }).click();
   await expect(page.getByLabel(/Found time/)).toHaveCount(0);
+});
+
+test("spreadsheet keyboard edits preserve drafts, focus and rectangular copying", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  const company = page.locator('[data-grid-r="0"][data-field="company"]');
+  await company.click();
+  await page.keyboard.press("F2");
+  const editor = page.getByRole("textbox", {
+    name: "Edit company",
+    exact: true,
+  });
+  await editor.fill("");
+  await editor.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("Required");
+  await editor.fill("Grid Company");
+  await editor.press("Enter");
+  await expect(company).toContainText("Grid Company");
+  await expect(company).toBeFocused();
+  await page.keyboard.press("Shift+ArrowRight");
+  await expect(
+    page.locator('[role="gridcell"][aria-selected="true"]'),
+  ).toHaveCount(2);
+  const copied = await company.evaluate((el) => {
+    const data = new DataTransfer();
+    el.dispatchEvent(
+      new ClipboardEvent("copy", { bubbles: true, clipboardData: data }),
+    );
+    return data.getData("text/plain");
+  });
+  expect(copied).toBe("Grid Company\tSenior Frontend Engineer");
+  await page.keyboard.press("F2");
+  await page.getByRole("textbox", { name: "Edit role_name" }).fill("Unsaved");
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("textbox", { name: "Edit role_name" }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Yesterday (CT)", exact: true })
+    .click();
+  await expect(page.getByText("1\u20131 of 1 bids")).toBeVisible();
+  await expect(
+    page.locator('[role="gridcell"][aria-selected="true"]'),
+  ).toHaveCount(0);
+});
+test("Sheets mapping creates an editable preview and blocks invalid rows", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page
+    .getByRole("button", { name: "Paste from Sheets", exact: true })
+    .click();
+  await page
+    .getByLabel("Import bidder", { exact: true })
+    .selectOption("bidder-0");
+  await page
+    .getByLabel("Import resume", { exact: true })
+    .selectOption("resume-0");
+  await page
+    .getByLabel("Copied Google Sheets cells")
+    .fill("Acme\tEngineer\thttps://example.com/one\nTokyo\tDesigner\tbad-url");
+  await page.getByRole("button", { name: "Read columns" }).click();
+  await page.getByRole("button", { name: "Preview bids" }).click();
+  await expect(
+    page.getByRole("button", { name: "Import 2 bids", exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByLabel("Row 2 Job URL", { exact: true })
+    .fill("https://example.com/two");
+  await expect(
+    page.getByRole("button", { name: "Import 2 bids", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Remove row 1", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Import 1 bids", exact: true }),
+  ).toBeEnabled();
 });

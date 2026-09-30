@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  experimental: { serverActions: { bodySizeLimit: "3mb" } },
   // Avoid printing passwords passed to authentication actions in development.
   logging: { serverFunctions: false },
   async headers() {

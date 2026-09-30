@@ -392,3 +392,63 @@ export async function getBidRows(
     };
   }
 }
+
+export async function updateBidCell(
+  bid: string,
+  field: string,
+  value: string,
+  version: number,
+) {
+  return perform(
+    async () =>
+      (await rpc("update_bid_cell", {
+        p_bid: z.uuid().parse(bid),
+        p_field: field,
+        p_value: z.string().max(8192).parse(value),
+        p_version: z.number().int().nonnegative().parse(version),
+      })) as {
+        ok?: boolean;
+        conflict?: boolean;
+        row: import("@/lib/database.types").Row<"bids">;
+      },
+    false,
+  );
+}
+export async function checkBidImport(
+  resume: string,
+  date: string,
+  rows: import("@/lib/sheets").ImportRow[],
+) {
+  return perform(async () => {
+    if (Buffer.byteLength(JSON.stringify(rows)) > 2 * 1024 * 1024)
+      throw new Error("Import payload is too large");
+    return (await rpc("validate_bid_import", {
+      p_resume: z.uuid().parse(resume),
+      p_date: date,
+      p_rows: rows,
+    })) as import("@/lib/sheets").ImportError[];
+  }, false);
+}
+export async function importBids(
+  resume: string,
+  date: string,
+  rows: import("@/lib/sheets").ImportRow[],
+  request: string,
+) {
+  return perform(async () => {
+    if (Buffer.byteLength(JSON.stringify(rows)) > 2 * 1024 * 1024)
+      throw new Error("Import payload is too large");
+    return (await rpc("import_bids", {
+      p_resume: z.uuid().parse(resume),
+      p_date: date,
+      p_rows: rows,
+      p_request: z.uuid().parse(request),
+    })) as {
+      ids?: string[];
+      errors?: import("@/lib/sheets").ImportError[];
+      date: string;
+      bidder: string;
+      resume: string;
+    };
+  });
+}

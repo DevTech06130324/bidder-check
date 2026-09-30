@@ -18,6 +18,7 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
   const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [open, setOpen] = useState(false);
   const [retry, setRetry] = useState(0);
   const router = useRouter();
@@ -50,7 +51,7 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
     };
   }, [visible, bid.evidence_file_id, retry]);
   return (
-    <div ref={ref} className="w-52 space-y-2 whitespace-normal">
+    <div ref={ref} className="w-40 space-y-1 whitespace-normal">
       {url && (
         <button
           className="block w-full overflow-hidden rounded-md border focus-visible:outline-2 focus-visible:outline-primary"
@@ -62,7 +63,7 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
           <img
             src={url}
             alt={`Application proof for ${bid.company}`}
-            className="h-20 w-full object-cover"
+            className="h-9 w-full object-cover"
             loading="lazy"
             onError={() => setError("Preview expired. Retry to refresh.")}
           />
@@ -77,7 +78,16 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
           Retry preview
         </Button>
       )}
-      {!bid.deleted_at && (
+      {!bid.deleted_at && !uploadOpen && (
+        <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)}>
+          {bid.applied
+            ? "Replace screenshot"
+            : bid.evidence_file_id
+              ? "Upload new proof"
+              : "Upload screenshot"}
+        </Button>
+      )}
+      {!bid.deleted_at && uploadOpen && (
         <FileUpload
           compact
           kind="screenshot"
@@ -89,7 +99,10 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
                 ? "Upload new proof"
                 : "Upload screenshot"
           }
-          onUploaded={() => router.refresh()}
+          onUploaded={() => {
+            setUploadOpen(false);
+            router.refresh();
+          }}
         />
       )}
       <Dialog open={open} onOpenChange={setOpen}>

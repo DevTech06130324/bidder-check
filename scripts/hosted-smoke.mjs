@@ -641,6 +641,129 @@ try {
   pass(
     "Client archival blocks both owner and descendant bidder; restoration reinstates access",
   );
+  // Real clipboard-style import followed by inline editing against hosted Postgres.
+  await bp.goto(`${origin}/bids`);
+  await bp
+    .getByRole("button", { name: "Paste from Sheets", exact: true })
+    .click();
+  await bp.getByLabel("Import resume", { exact: true }).selectOption(resume.id);
+  await bp.getByLabel("Added date (CT)", { exact: true }).fill("2026-03-08");
+  await bp
+    .getByLabel("Copied Google Sheets cells")
+    .fill(
+      'Imported One\tEngineer\thttps://example.com/import/one\n"Imported Two"\tDesigner\thttps://example.com/import/two',
+    );
+  await bp.getByRole("button", { name: "Read columns" }).click();
+  await bp.getByRole("button", { name: "Preview bids" }).click();
+  await expect(
+    bp.getByRole("button", { name: "Import 2 bids", exact: true }),
+  ).toBeEnabled({ timeout: 30000 });
+  await bp.getByRole("button", { name: "Import 2 bids", exact: true }).click();
+  await expect(bp.getByText("2 bids imported", { exact: true })).toBeVisible({
+    timeout: 45000,
+  });
+  const imported = ok(
+    await bidder
+      .from("bids")
+      .select("*")
+      .like("url", "https://example.com/import/%"),
+  );
+  assert.equal(imported.length, 2);
+  for (const row of imported) {
+    assert.equal(
+      new Date(row.found_at).toISOString(),
+      "2026-03-08T06:00:00.000Z",
+    );
+    assert.equal(row.applied, false);
+    assert.equal(row.rate_cents, null);
+  }
+  const cell = bp.getByRole("gridcell", { name: "Imported One", exact: true });
+  await cell.dblclick();
+  await bp
+    .getByRole("textbox", { name: "Edit company", exact: true })
+    .fill("Edited Import");
+  await bp
+    .getByRole("textbox", { name: "Edit company", exact: true })
+    .press("Enter");
+  await expect(
+    bp.getByRole("gridcell", { name: "Edited Import Saved", exact: true }),
+  ).toBeVisible({ timeout: 30000 });
+  const one = imported.find((r) => r.company === "Imported One");
+  let current = await readBid(one.id);
+  assert.equal(current.company, "Edited Import");
+  const races = await Promise.all(
+    ["Concurrent A", "Concurrent B"].map((value) =>
+      bidder.rpc("update_bid_cell", {
+        p_bid: one.id,
+        p_field: "company",
+        p_value: value,
+        p_version: current.version,
+      }),
+    ),
+  );
+  assert.equal(races.filter((r) => ok(r).ok).length, 1);
+  assert.equal(races.filter((r) => ok(r).conflict).length, 1);
+  const payload = {
+    p_resume: resume.id,
+    p_date: "2026-11-01",
+    p_rows: [
+      {
+        company: "Retry",
+        role_name: "Engineer",
+        url: "https://example.com/import/retry",
+        source: "",
+        arrangement: "remote",
+        job_status: "open",
+      },
+    ],
+    p_request: randomUUID(),
+  };
+  // Use a past fall DST date, independent of the wall clock's current month.
+  payload.p_date = "2025-11-02";
+  const receipts = await Promise.all([
+    bidder.rpc("import_bids", payload),
+    bidder.rpc("import_bids", payload),
+  ]);
+  assert.deepEqual(ok(receipts[0]), ok(receipts[1]));
+  assert.equal(ok(receipts[0]).ids.length, 1);
+  assert.equal(
+    new Date((await readBid(ok(receipts[0]).ids[0])).found_at).toISOString(),
+    "2025-11-02T05:00:00.000Z",
+  );
+  assert.ok(
+    (
+      await bidder.rpc("import_bids", {
+        ...payload,
+        p_rows: [{ ...payload.p_rows[0], company: "Different" }],
+      })
+    ).error,
+  );
+  const rollback = ok(
+    await bidder.rpc("import_bids", {
+      ...payload,
+      p_request: randomUUID(),
+      p_rows: [
+        {
+          ...payload.p_rows[0],
+          url: "https://example.com/import/must-rollback",
+        },
+        payload.p_rows[0],
+      ],
+    }),
+  );
+  assert.ok(rollback.errors.length);
+  assert.equal(
+    ok(
+      await bidder
+        .from("bids")
+        .select("id")
+        .eq("url", "https://example.com/import/must-rollback"),
+    ).length,
+    0,
+  );
+  pass(
+    "Sheets UI imports historical rows, inline edit persists, concurrent edits conflict, import retries deduplicate and invalid batches roll back",
+  );
   ok(
     await client.rpc("update_bidder", {
       p_bidder: invited.id,
@@ -719,6 +842,7 @@ try {
     ok(await admin.from("workspaces").delete().in("id", workspaces));
   }
   if (users.length) {
+    ok(await admin.from("bid_import_receipts").delete().in("actor_id", users));
     ok(await admin.from("account_events").delete().in("account_id", users));
     ok(
       await admin

@@ -9,7 +9,14 @@ export function chicagoDateRange(
   if (mode === "all") return {};
   if (mode === "today")
     from = to = formatInTimeZone(now, BID_TIMEZONE, "yyyy-MM-dd");
-  if (mode !== "today" && mode !== "custom")
+  if (mode === "yesterday") {
+    const day = new Date(
+      `${formatInTimeZone(now, BID_TIMEZONE, "yyyy-MM-dd")}T00:00:00Z`,
+    );
+    day.setUTCDate(day.getUTCDate() - 1);
+    from = to = day.toISOString().slice(0, 10);
+  }
+  if (mode !== "today" && mode !== "yesterday" && mode !== "custom")
     throw new Error("Invalid date filter");
   const valid = (value: string) =>
     /^\d{4}-\d{2}-\d{2}$/.test(value) &&

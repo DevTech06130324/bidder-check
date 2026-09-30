@@ -727,3 +727,150 @@ it("pending clients cannot mutate settings through direct RPC", async () => {
     ),
   ).rejects.toThrow("Access denied");
 });
+it("imports atomically with receipts and version-checks individual cells", async () => {
+  await asUser(client);
+  const rid = (
+    await db.query<{ id: string }>(
+      "select public.save_resume(null,$1,$2,'SHEET-01','Jordan','jordan@test.com','','','','Instructions',null) id",
+      [workspace, bidder],
+    )
+  ).rows[0].id;
+  await asUser(bidder);
+  const rows = [
+    {
+      company: "Sheets Inc",
+      role_name: "Engineer",
+      url: "https://example.com/sheet/1",
+      source: "Google",
+      arrangement: "remote",
+      job_status: "open",
+    },
+  ];
+  const request = "00000000-0000-4000-8000-000000000099";
+  const run = async (values = rows, key = request) =>
+    (
+      await db.query<{ result: { ids: string[]; errors?: unknown[] } }>(
+        "select public.import_bids($1,'2026-03-08',$2::jsonb,$3) result",
+        [rid, JSON.stringify(values), key],
+      )
+    ).rows[0].result;
+  const first = await run();
+  expect(first.ids).toHaveLength(1);
+  expect(await run()).toEqual(first);
+  await expect(run([{ ...rows[0], company: "Changed" }])).rejects.toThrow(
+    /different content/,
+  );
+  const b = (
+    await db.query<{
+      found_at: Date;
+      created_at: Date;
+      version: number;
+      applied: boolean;
+    }>("select * from public.bids where id=$1", [first.ids[0]])
+  ).rows[0];
+  expect(new Date(b.found_at).toISOString()).toBe("2026-03-08T06:00:00.000Z");
+  expect(b.applied).toBe(false);
+  expect(new Date(b.created_at).getTime()).toBeGreaterThan(
+    new Date(b.found_at).getTime(),
+  );
+  const edit = async (version: number, field = "company", value = "Updated") =>
+    (
+      await db.query<{
+        result: {
+          ok: boolean;
+          conflict?: boolean;
+          row: { company: string; version: number };
+        };
+      }>("select public.update_bid_cell($1,$2,$3,$4) result", [
+        first.ids[0],
+        field,
+        value,
+        version,
+      ])
+    ).rows[0].result;
+  expect((await edit(b.version)).ok).toBe(true);
+  const stale = await edit(b.version);
+  expect(stale.conflict).toBe(true);
+  expect(stale.row.company).toBe("Updated");
+  await expect(
+    edit(stale.row.version, "found_at", "2020-01-01"),
+  ).rejects.toThrow(/editable/);
+  await asUser(other);
+  await expect(edit(stale.row.version)).rejects.toThrow(/Access denied/);
+  await asUser(bidder);
+  await db.query("select public.trash_bid($1,true)", [first.ids[0]]);
+  const duplicate = await run(
+    [rows[0], { ...rows[0], url: "https://example.com/sheet/2" }],
+    "00000000-0000-4000-8000-000000000098",
+  );
+  expect(JSON.stringify(duplicate.errors)).toMatch(/restore/i);
+  expect(
+    (
+      await db.query(
+        "select id from public.bids where url='https://example.com/sheet/2'",
+      )
+    ).rows,
+  ).toHaveLength(0);
+  await expect(edit(stale.row.version)).rejects.toThrow(/trash/);
+  const invalid = await run(
+    [{ ...rows[0], url: "javascript:alert(1)" }],
+    "00000000-0000-4000-8000-000000000097",
+  );
+  expect(invalid.errors?.length).toBeGreaterThan(0);
+});
+it("imports enforce limits, permissions, dates, receipt privacy and locked resumes", async () => {
+  await asUser(bidder);
+  const rid = (
+    await db.query<{ id: string }>(
+      "select id from public.resumes where identifier='SHEET-01'",
+    )
+  ).rows[0].id;
+  const row = {
+    company: "A",
+    role_name: "R",
+    url: "https://example.com/batch/new",
+    source: "",
+    arrangement: "remote",
+    job_status: "open",
+  };
+  const validate = async (rows: unknown, date = "2026-11-01") =>
+    db.query("select public.validate_bid_import($1,$2,$3::jsonb)", [
+      rid,
+      date,
+      JSON.stringify(rows),
+    ]);
+  await expect(validate([row], "2999-01-01")).rejects.toThrow(/future/);
+  await expect(
+    validate(
+      Array.from({ length: 501 }, () => row),
+      "2026-03-08",
+    ),
+  ).rejects.toThrow(/500/);
+  await asUser(other);
+  await expect(validate([row], "2026-03-08")).rejects.toThrow(/Access denied/);
+  expect(
+    (await db.query("select * from public.bid_import_receipts")).rows,
+  ).toHaveLength(0);
+  await asUser("00000000-0000-4000-8000-000000000005");
+  await db.query("select public.update_client($1,'Client',true)", [client]);
+  await asUser(bidder);
+  expect(
+    (await db.query("select * from public.bid_import_receipts")).rows,
+  ).toHaveLength(0);
+  await expect(validate([row], "2026-03-08")).rejects.toThrow(/Access denied/);
+  await asUser("00000000-0000-4000-8000-000000000005");
+  await db.query("select public.update_client($1,'Client',false)", [client]);
+  await asUser(bidder);
+  const applied = (
+    await db.query<{ id: string; version: number }>(
+      "select id,version from public.bids where first_applied_at is not null and deleted_at is null limit 1",
+    )
+  ).rows[0];
+  await expect(
+    db.query("select public.update_bid_cell($1,'resume_id',$2,$3)", [
+      applied.id,
+      rid,
+      applied.version,
+    ]),
+  ).rejects.toThrow(/locked/);
+});

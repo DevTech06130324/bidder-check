@@ -43,3 +43,29 @@ export async function getBidRows(
     return { error: String(e) };
   }
 }
+
+// Only this isolated Vite fixture simulates writes. Production actions always use RLS/RPCs.
+export async function updateBidCell(
+  id: string,
+  field: string,
+  value: string,
+  version: number,
+) {
+  const { fixture } = await import("./sample-data");
+  const row = fixture.bids.find((b) => b.id === id)!;
+  if (row.version !== version) return { data: { conflict: true, row } };
+  if (["company", "role_name"].includes(field) && !value.trim())
+    return { error: "Required; maximum 200 characters" };
+  const updated = { ...row, [field]: value, version: version + 1 };
+  fixture.bids = fixture.bids.map((b) => (b.id === id ? updated : b));
+  return { data: { ok: true, row: updated } };
+}
+export async function checkBidImport(
+  _resume: string,
+  _date: string,
+  rows: import("@/lib/sheets").ImportRow[],
+) {
+  const { validateImportRows } = await import("@/lib/sheets");
+  return { data: validateImportRows(rows) };
+}
+export const importBids = unavailable;
