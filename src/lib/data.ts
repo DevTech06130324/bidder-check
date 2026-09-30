@@ -17,11 +17,13 @@ export async function getWorkspaceData(): Promise<WorkspaceData> {
   >(table: T): Promise<Row<T>[]> {
     const result: Row<T>[] = [];
     for (let start = 0; ; start += 1000) {
-      const { data, error } = await supabase
+      let query = supabase
         .from(table)
         .select("*")
         .order(table === "bidders" ? "user_id" : "id")
         .range(start, start + 999);
+      if (table === "bids") query = query.is("deleted_at", null);
+      const { data, error } = await query;
       if (error) throw new Error(error.message);
       result.push(...(data as unknown as Row<T>[]));
       if (data.length < 1000) break;

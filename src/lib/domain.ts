@@ -1,4 +1,32 @@
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
+export const BID_TIMEZONE = "America/Chicago";
+export function chicagoDateRange(
+  mode: string,
+  from: string,
+  to: string,
+  now = new Date(),
+): { from?: string; to?: string } {
+  if (mode === "all") return {};
+  if (mode === "today")
+    from = to = formatInTimeZone(now, BID_TIMEZONE, "yyyy-MM-dd");
+  if (mode !== "today" && mode !== "custom")
+    throw new Error("Invalid date filter");
+  const valid = (value: string) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString().slice(0, 10) === value;
+  if (!valid(from) || !valid(to) || from > to)
+    throw new Error("Choose a valid date range");
+  const next = new Date(`${to}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return {
+    from: fromZonedTime(`${from}T00:00:00`, BID_TIMEZONE).toISOString(),
+    to: fromZonedTime(
+      `${next.toISOString().slice(0, 10)}T00:00:00`,
+      BID_TIMEZONE,
+    ).toISOString(),
+  };
+}
 
 export function normalizeJobUrl(input: string) {
   const url = new URL(input.trim());
@@ -49,10 +77,12 @@ export function summarizeEarnings(
     applied: boolean;
     evidence_file_id: string | null;
     rate_cents: number | null;
+    deleted_at?: string | null;
   }[],
 ) {
   const eligible = [...new Map(rows.map((r) => [r.id, r])).values()].filter(
-    (r) => r.applied && r.evidence_file_id && r.rate_cents !== null,
+    (r) =>
+      !r.deleted_at && r.applied && r.evidence_file_id && r.rate_cents !== null,
   );
   return {
     count: eligible.length,

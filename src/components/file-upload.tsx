@@ -10,16 +10,26 @@ export function FileUpload({
   kind,
   target,
   onUploaded,
+  compact = false,
+  label,
 }: {
   kind: "resume" | "screenshot";
   target: string;
   onUploaded?: (id: string) => void;
+  compact?: boolean;
+  label?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [phase, setPhase] = useState("");
+  const [error, setError] = useState("");
+  const retryFile = useRef<File | null>(null);
+  const busy = useRef(false);
   async function upload(file: File) {
-    if (progress !== null) return;
+    if (busy.current) return;
+    busy.current = true;
+    retryFile.current = file;
+    setError("");
     try {
       validateUpload(kind, file.type, file.size);
       setProgress(0);
@@ -79,8 +89,11 @@ export function FileUpload({
       );
       onUploaded?.(finalized.data);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Upload failed.");
+      const message = error instanceof Error ? error.message : "Upload failed.";
+      setError(message);
+      toast.error(message);
     } finally {
+      busy.current = false;
       setProgress(null);
       if (input.current) input.current.value = "";
     }
@@ -93,7 +106,7 @@ export function FileUpload({
           ? "Upload or paste an application screenshot"
           : "Upload resume file"
       }
-      className="rounded-xl border border-dashed border-primary/30 bg-primary/[.025] p-6 text-center focus-visible:outline-2 focus-visible:outline-primary"
+      className={`relative rounded-xl border border-dashed border-primary/30 bg-primary/[.025] text-center focus-visible:outline-2 focus-visible:outline-primary ${compact ? "w-52 whitespace-normal p-2" : "p-6"}`}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -119,22 +132,24 @@ export function FileUpload({
           if (e.target.files?.[0]) void upload(e.target.files[0]);
         }}
       />
-      {progress !== null ? (
-        <LoaderCircle
-          className="mx-auto mb-3 animate-spin text-primary"
-          size={25}
-        />
-      ) : kind === "screenshot" ? (
-        <ImagePlus className="mx-auto mb-3 text-primary" size={25} />
-      ) : (
-        <UploadCloud className="mx-auto mb-3 text-primary" size={25} />
-      )}
+      {!compact &&
+        (progress !== null ? (
+          <LoaderCircle
+            className="mx-auto mb-3 animate-spin text-primary"
+            size={25}
+          />
+        ) : kind === "screenshot" ? (
+          <ImagePlus className="mx-auto mb-3 text-primary" size={25} />
+        ) : (
+          <UploadCloud className="mx-auto mb-3 text-primary" size={25} />
+        ))}
       <p className="text-sm font-medium">
         {progress !== null
           ? `${phase}… ${progress}%`
-          : kind === "screenshot"
-            ? "Drop your screenshot here"
-            : "Drop your resume here"}
+          : (label ??
+            (kind === "screenshot"
+              ? "Drop your screenshot here"
+              : "Drop your resume here"))}
       </p>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
         {kind === "screenshot"
@@ -142,6 +157,19 @@ export function FileUpload({
           : "PDF, DOC or DOCX"}{" "}
         · Up to 10 MB
       </p>
+      {error && (
+        <div role="alert" className="mb-2 text-xs text-destructive">
+          {error}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => retryFile.current && void upload(retryFile.current)}
+          >
+            Retry upload
+          </Button>
+        </div>
+      )}
       {progress !== null ? (
         <div
           role="progressbar"

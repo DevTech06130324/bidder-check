@@ -6,6 +6,7 @@ import {
   summarizeEarnings,
   dateInRange,
   validateUpload,
+  chicagoDateRange,
 } from "@/lib/domain";
 
 describe("job URL identity", () => {
@@ -23,6 +24,35 @@ describe("job URL identity", () => {
     expect(() => normalizeJobUrl("javascript:alert(1)")).toThrow();
     expect(() => normalizeJobUrl("https://user:pass@example.com")).toThrow();
   });
+});
+it("Chicago day bounds follow DST and UTC midnight does not start a new CT day", () => {
+  expect(
+    chicagoDateRange("today", "", "", new Date("2026-03-09T04:59:00Z")),
+  ).toEqual({
+    from: "2026-03-08T06:00:00.000Z",
+    to: "2026-03-09T05:00:00.000Z",
+  });
+  expect(chicagoDateRange("custom", "2026-11-01", "2026-11-01")).toEqual({
+    from: "2026-11-01T05:00:00.000Z",
+    to: "2026-11-02T06:00:00.000Z",
+  });
+  expect(chicagoDateRange("all", "", "")).toEqual({});
+  expect(() =>
+    chicagoDateRange("custom", "2026-03-09", "2026-03-08"),
+  ).toThrow();
+});
+it("trash never contributes earnings", () => {
+  expect(
+    summarizeEarnings([
+      {
+        id: "trash",
+        applied: true,
+        evidence_file_id: "proof",
+        rate_cents: 100,
+        deleted_at: "2026-01-01",
+      },
+    ]),
+  ).toEqual({ count: 0, cents: 0 });
 });
 describe("money", () => {
   it("uses cents without rounding ambiguous input", () => {

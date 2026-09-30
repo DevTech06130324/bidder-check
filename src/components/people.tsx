@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Search, ArrowUpRight, RotateCcw, Users } from "lucide-react";
+import { Plus, Search, ArrowUpRight, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import type { WorkspaceData } from "@/lib/data";
 import type { Row } from "@/lib/database.types";
@@ -11,6 +11,9 @@ import {
   createBidder,
   updateBidder,
   updateClient,
+  createClientAccount,
+  reviewClient,
+  resetManagedPassword,
 } from "@/app/(workspace)/actions";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -33,9 +36,11 @@ import {
 export function CreateBidderDialog({
   data,
   invitation,
+  workspaceId,
 }: {
   data: WorkspaceData;
   invitation?: Row<"invitations">;
+  workspaceId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
@@ -78,14 +83,23 @@ export function CreateBidderDialog({
           <SelectField
             label="Workspace"
             name="workspace_id"
-            defaultValue={invitation?.workspace_id ?? data.workspaces[0]?.id}
+            defaultValue={
+              invitation?.workspace_id ?? workspaceId ?? data.workspaces[0]?.id
+            }
             required
           >
-            {data.workspaces.map((w) => (
-              <option value={w.id} key={w.id}>
-                {w.name}
-              </option>
-            ))}
+            {data.workspaces
+              .filter((w) => {
+                const owner = data.profiles.find((p) => p.id === w.owner_id);
+                return (
+                  !owner?.archived && owner?.approval_status === "approved"
+                );
+              })
+              .map((w) => (
+                <option value={w.id} key={w.id}>
+                  {w.name}
+                </option>
+              ))}
           </SelectField>
           <Field
             label="Full name"
@@ -169,6 +183,13 @@ export function EditPerson({
             defaultValue={person.display_name}
             required
           />
+          <Field
+            label="Email address"
+            name="email"
+            type="email"
+            required
+            defaultValue={person.email}
+          />
           {bidder && (
             <Field
               label="Default rate per bid (USD)"
@@ -193,178 +214,344 @@ export function EditPerson({
           </SelectField>
           <SaveButton pending={pending} />
         </form>
+        <PasswordReset person={person} />
       </DialogContent>
     </Dialog>
   );
 }
+function PasswordReset({ person }: { person: Row<"profiles"> }) {
+  const [confirmed, setConfirmed] = useState(false);
+  const [pending, start] = useTransition();
+  return (
+    <div className="space-y-3 border-t pt-4">
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          onChange={(e) => setConfirmed(e.target.checked)}
+        />
+        Reset {person.email}&apos;s password to 123456. Their current password
+        will stop working.
+      </label>
+      <Button
+        variant="outline"
+        disabled={!confirmed || pending}
+        onClick={() =>
+          start(async () => {
+            const result = await resetManagedPassword(person.id, confirmed);
+            if (result.error) toast.error(result.error);
+            else {
+              toast.success("Password reset to 123456");
+              setConfirmed(false);
+            }
+          })
+        }
+      >
+        Reset password
+      </Button>
+    </div>
+  );
+}
+function CreateClientDialog() {
+  const [open, setOpen] = useState(false);
+  const [pending, start] = useTransition();
+  const router = useRouter();
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline">
+          <Plus size={16} /> Add client
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create an approved client</DialogTitle>
+          <DialogDescription>
+            Initial password: 123456. No email is sent.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-4"
+          action={(form) =>
+            start(async () => {
+              const result = await createClientAccount(form);
+              if (result.error) toast.error(result.error);
+              else {
+                setOpen(false);
+                toast.success("Client created");
+                router.refresh();
+              }
+            })
+          }
+        >
+          <Field
+            label="Full name"
+            name="display_name"
+            required
+            maxLength={100}
+          />
+          <Field label="Email address" name="email" type="email" required />
+          <SaveButton pending={pending} label="Create client" />
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+function ApprovalActions({ person }: { person: Row<"profiles"> }) {
+  const [reason, setReason] = useState("");
+  const [open, setOpen] = useState(false);
+  const [pending, start] = useTransition();
+  const router = useRouter();
+  function review(status: "approved" | "rejected") {
+    start(async () => {
+      const result = await reviewClient(person.id, status, reason);
+      if (result.error) toast.error(result.error);
+      else {
+        setOpen(false);
+        toast.success(
+          status === "approved" ? "Client approved" : "Client rejected",
+        );
+        router.refresh();
+      }
+    });
+  }
+  return (
+    <div className="flex gap-2">
+      {person.approval_status !== "approved" && (
+        <Button size="sm" disabled={pending} onClick={() => review("approved")}>
+          Approve
+        </Button>
+      )}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Button size="sm" variant="outline">
+            {person.approval_status === "rejected"
+              ? "Review rejection"
+              : "Reject"}
+          </Button>
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Review {person.display_name}</DialogTitle>
+            <DialogDescription>
+              The rejection reason is shown to the client. Rejecting an approved
+              client also blocks their bidders.
+            </DialogDescription>
+          </DialogHeader>
+          <Field
+            label="Rejection reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            required
+            maxLength={1000}
+          />
+          <Button
+            disabled={pending || !reason.trim()}
+            onClick={() => review("rejected")}
+          >
+            Reject registration
+          </Button>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
 export function People({ data }: { data: WorkspaceData }) {
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState("all");
-  const people = data.profiles.filter(
+  const [tab, setTab] = useState("active");
+  const admin = data.profile.role === "admin";
+  const matches = (p: Row<"profiles">) =>
+    `${p.display_name} ${p.email} ${p.id}`
+      .toLowerCase()
+      .includes(search.toLowerCase());
+  const biddersFor = (client: string) =>
+    data.bidders
+      .filter((b) =>
+        data.workspaces.some(
+          (w) => w.id === b.workspace_id && w.owner_id === client,
+        ),
+      )
+      .map((b) => data.profiles.find((p) => p.id === b.user_id)!)
+      .filter(Boolean);
+  const visible = (p: Row<"profiles">) =>
+    tab === "archived"
+      ? p.archived
+      : tab === "pending"
+        ? p.role === "client" && p.approval_status !== "approved" && !p.archived
+        : !p.archived;
+  function personRow(p: Row<"profiles">) {
+    const b = data.bidders.find((b) => b.user_id === p.id);
+    return (
+      <div key={p.id} className="flex flex-wrap items-center gap-3 p-4">
+        <span className="flex size-10 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+          {initials(p.display_name || p.email)}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold">
+            {b ? (
+              <Link className="hover:text-primary" href={`/users/${p.id}`}>
+                {p.display_name}
+              </Link>
+            ) : (
+              p.display_name
+            )}
+          </p>
+          <p className="break-all text-xs text-muted-foreground">{p.email}</p>
+        </div>
+        {p.role === "client" && (
+          <Badge variant="secondary" className="capitalize">
+            {p.approval_status}
+          </Badge>
+        )}
+        {p.archived && <Badge variant="outline">Archived</Badge>}
+        {b && (
+          <span className="text-xs text-muted-foreground">
+            {b.default_rate_cents === null
+              ? "Rate not set"
+              : `${usd(b.default_rate_cents)} / bid`}
+          </span>
+        )}
+        {admin && p.role === "client" && !p.archived && (
+          <ApprovalActions person={p} />
+        )}
+        <EditPerson person={p} bidder={b} />
+        {b && (
+          <Button asChild size="icon" variant="ghost">
+            <Link href={`/users/${p.id}`} aria-label={`View ${p.display_name}`}>
+              <ArrowUpRight size={16} />
+            </Link>
+          </Button>
+        )}
+      </div>
+    );
+  }
+  const clients = data.profiles.filter(
     (p) =>
-      p.role !== "admin" &&
-      p.id !== data.profile.id &&
-      (!search ||
-        `${p.display_name} ${p.email}`
-          .toLowerCase()
-          .includes(search.toLowerCase())) &&
-      (tab === "all" || p.role === tab),
+      p.role === "client" &&
+      (visible(p) ||
+        (tab === "archived" && biddersFor(p.id).some((b) => b.archived))) &&
+      (matches(p) || biddersFor(p.id).some(matches)),
+  );
+  const bidders = data.profiles.filter(
+    (p) => p.role === "bidder" && visible(p) && matches(p),
   );
   return (
     <>
       <PageHeading
         eyebrow="THE PEOPLE BEHIND THE PROGRESS"
         title="Better work, together."
-        description="A clear view of your team, their profiles, and their progress."
+        description={
+          admin
+            ? "Clients, their bidders, and registrations awaiting your review."
+            : "Manage your bidders, account access, and rates."
+        }
       >
+        {admin && <CreateClientDialog />}
         <CreateBidderDialog data={data} />
       </PageHeading>
-      <div className="mb-6 grid gap-4 sm:grid-cols-3">
-        {[
-          {
-            label: "Team members",
-            value: data.bidders.filter((b) => !b.archived).length,
-          },
-          {
-            label: "Resume profiles",
-            value: data.resumes.filter((r) => !r.archived).length,
-          },
-          {
-            label: "Pending accounts",
-            value: data.invitations.filter((i) => !i.accepted_at).length,
-          },
-        ].map((s) => (
-          <div className="panel flex items-center gap-4 p-5" key={s.label}>
-            <div className="rounded-xl bg-primary/10 p-3 text-primary">
-              <Users size={20} />
-            </div>
-            <div>
-              <p className="text-2xl font-semibold">{s.value}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{s.label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-      <section className="panel">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b p-5">
-          <div className="flex gap-1">
-            {(data.profile.role === "admin"
-              ? ["all", "client", "bidder"]
-              : ["all"]
+      <section className="panel overflow-hidden">
+        <div className="flex flex-wrap justify-between gap-3 border-b p-4">
+          <div className="flex flex-wrap gap-1">
+            {(admin
+              ? ["active", "pending", "archived"]
+              : ["active", "archived"]
             ).map((t) => (
               <Button
-                size="sm"
-                variant={tab === t ? "secondary" : "ghost"}
                 key={t}
+                variant={tab === t ? "secondary" : "ghost"}
+                size="sm"
+                aria-pressed={tab === t}
                 onClick={() => setTab(t)}
                 className="capitalize"
               >
-                {t === "all" ? "All people" : `${t}s`}
+                {t}
+                {t === "pending"
+                  ? ` (${data.profiles.filter((p) => p.role === "client" && !p.archived && p.approval_status === "pending").length})`
+                  : ""}
               </Button>
             ))}
           </div>
-          <div className="relative w-full sm:w-64">
+          <div className="relative">
             <Search
               size={15}
               className="absolute left-3 top-2.5 text-muted-foreground"
             />
             <Input
-              aria-label="Search people"
-              placeholder="Search name or email…"
               className="pl-9"
+              aria-label="Search people"
+              placeholder="Search name, email or ID"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
         </div>
-        {!people.length ? (
-          <EmptyState
-            title="Your team starts here"
-            description="Add your first bidder, then give them a resume profile and a rate to get started."
-          />
-        ) : (
-          <div className="divide-y">
-            {people.map((p) => {
-              const b = data.bidders.find((b) => b.user_id === p.id);
+        {admin ? (
+          clients.length ? (
+            clients.map((p) => {
+              const children = biddersFor(p.id);
+              const w = data.workspaces.find((w) => w.owner_id === p.id);
               return (
-                <div
-                  key={p.id}
-                  className="flex flex-wrap items-center gap-4 p-5"
-                >
-                  <span className="flex size-11 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-                    {initials(p.display_name || p.email)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <Link
-                        href={b ? `/users/${p.id}` : "/users"}
-                        className="font-semibold hover:text-primary"
-                      >
-                        {p.display_name}
-                      </Link>
-                      <Badge
-                        variant="secondary"
-                        className="text-[10px] capitalize"
-                      >
-                        {p.role}
-                      </Badge>
-                      {p.archived && <Badge variant="outline">Archived</Badge>}
+                <div className="border-b last:border-0" key={p.id}>
+                  {personRow(p)}
+                  <details
+                    className="px-4 pb-4"
+                    open={search ? true : undefined}
+                  >
+                    <summary className="cursor-pointer rounded-lg bg-secondary/50 px-4 py-3 text-sm font-medium">
+                      {children.length} bidders under {p.display_name}
+                    </summary>
+                    <div className="ml-3 border-l pl-3">
+                      {children
+                        .filter(
+                          (b) =>
+                            (tab !== "archived" || p.archived || b.archived) &&
+                            (matches(p) || matches(b)),
+                        )
+                        .map(personRow)}
+                      {!children.length && (
+                        <p className="p-4 text-sm text-muted-foreground">
+                          No bidders yet.
+                        </p>
+                      )}
+                      {w && !p.archived && p.approval_status === "approved" && (
+                        <div className="p-3">
+                          <CreateBidderDialog data={data} workspaceId={w.id} />
+                        </div>
+                      )}
                     </div>
-                    <p className="mt-1 truncate text-xs text-muted-foreground">
-                      {p.email}
-                    </p>
-                  </div>
-                  {b && (
-                    <div className="hidden text-right sm:block">
-                      <p className="text-sm font-semibold">
-                        {b.default_rate_cents === null
-                          ? "Rate not set"
-                          : usd(b.default_rate_cents)}
-                      </p>
-                      <p className="mt-1 text-[10px] text-muted-foreground">
-                        per application
-                      </p>
-                    </div>
-                  )}
-                  <EditPerson person={p} bidder={b} />
-                  {b && (
-                    <Button asChild variant="ghost" size="icon">
-                      <Link
-                        href={`/users/${p.id}`}
-                        aria-label={`View ${p.display_name}`}
-                      >
-                        <ArrowUpRight size={16} />
-                      </Link>
-                    </Button>
-                  )}
+                  </details>
                 </div>
               );
-            })}
-          </div>
+            })
+          ) : (
+            <EmptyState
+              title="No matching clients"
+              description="Try another view or search."
+            />
+          )
+        ) : bidders.length ? (
+          bidders.map(personRow)
+        ) : (
+          <EmptyState
+            title="No matching bidders"
+            description="Add a bidder or change your search."
+          />
         )}
       </section>
       {data.invitations.some((i) => !i.accepted_at) && (
         <section className="panel mt-6 p-5">
-          <h2 className="mb-4 font-semibold">Pending accounts</h2>
-          <div className="divide-y">
-            {data.invitations
-              .filter((i) => !i.accepted_at)
-              .map((i) => (
-                <div
-                  className="flex flex-wrap items-center justify-between gap-3 py-3"
-                  key={i.id}
-                >
-                  <div>
-                    <p className="text-sm font-medium">{i.display_name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {i.email} · Expires{" "}
-                      {new Date(i.expires_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <CreateBidderDialog data={data} invitation={i} />
-                </div>
-              ))}
-          </div>
+          <h2 className="mb-3 font-semibold">Unfinished account creation</h2>
+          {data.invitations
+            .filter((i) => !i.accepted_at)
+            .map((i) => (
+              <div
+                key={i.id}
+                className="flex items-center justify-between gap-3 py-2"
+              >
+                <p className="text-sm">{i.email}</p>
+                <CreateBidderDialog data={data} invitation={i} />
+              </div>
+            ))}
         </section>
       )}
     </>

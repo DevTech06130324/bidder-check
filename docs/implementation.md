@@ -34,3 +34,11 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - Follow-up security review found no blocker in the new account flow. Production has zero legacy unconfirmed bidder accounts, so the old invitation conversion concern does not apply.
 - Full hosted Playwright journey passed on Vercel staging (2026-09-29): immediate signup; direct bidder creation/default-password login/password change; private resume upload/download; invalid screenshot rejection; screenshot application; direct HTTP tenant/storage/role restrictions; correction/new proof/original rate/concurrent retry behavior; earnings and archival. Synthetic users/files were removed afterward. Local report: `test-results/hosted-smoke.json` (ignored).
 - Production migrations 001–003 and immediate-signup configuration applied successfully. Git commit `ffd5474` is deployed READY in both environments; production deployment `dpl_4rJ8zXEdvLHPVYx72AkmES2sRcKF`. Local CLI uploads encountered connection timeouts, so release used the existing GitHub integration. No SMTP setup is required.
+
+## Approval and daily workflow update ? 2026-09-29
+
+- Implemented migrations 004?006: approval state, tenant restrictions, account audit, transactional email synchronization, recoverable bid trash, immutable Found time, and atomic verified screenshot application.
+- Existing clients remain approved; public clients start pending. Account editing, approval/rejection, reset confirmation and Client ? Bidders hierarchy are available in Users.
+- Chicago Today / All / Custom table query is independent of reporting. Expanded columns include signed visible-row previews and inline screenshot upload. Trash is excluded from reporting and keeps evidence/history for restoration.
+- Review identified stale account reservations after email changes. Reproduced in PostgreSQL tests; migration 006 moves the reservation with its Auth account. Browser tests identified a TanStack render loop; memoized filtered rows resolve it.
+- Verification/release evidence will be recorded after hosted staging and production checks.

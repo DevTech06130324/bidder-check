@@ -9,5 +9,8 @@ export default defineConfig([
     "next-env.d.ts",
     "playwright-report/**",
     "test-results/**",
+    ".superpowers/**",
+    ".worktrees/**",
+    ".vercel/**",
   ]),
 ]);

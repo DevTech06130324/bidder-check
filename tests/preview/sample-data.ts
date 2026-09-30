@@ -5,6 +5,10 @@ const profile = {
   display_name: "Alex Morgan",
   email: "alex@example.test",
   role: "client",
+  approval_status: "approved",
+  approval_reason: null,
+  reviewed_at: null,
+  reviewed_by: null,
   archived: false,
   created_at: now,
 };
@@ -13,6 +17,10 @@ const people = ["Jamie Parker", "Taylor Reed", "Sam Rivera"].map((name, i) => ({
   display_name: name,
   email: `bidder${i}@example.test`,
   role: "bidder",
+  approval_status: "approved",
+  approval_reason: null,
+  reviewed_at: null,
+  reviewed_by: null,
   archived: false,
   created_at: now,
 }));
@@ -96,6 +104,8 @@ export const fixture: WorkspaceData = {
     evidence_file_id: i % 3 !== 0 ? "file" : null,
     rejected_hashes: [],
     version: 0,
+    deleted_at: null,
+    deleted_by: null,
     created_at: new Date(Date.now() - i * 86400000).toISOString(),
   })),
 };

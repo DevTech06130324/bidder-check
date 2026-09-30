@@ -33,6 +33,11 @@ beforeAll(async () => {
     "insert into auth.users(id,email) values ($1,'client@test.com'),($2,'other@test.com')",
     [client, other],
   );
+  await db.exec(`do $$ begin
+    if exists(select 1 from information_schema.columns where table_name='profiles' and column_name='approval_status') then
+      update public.profiles set approval_status='approved';
+    end if;
+  end $$;`);
   await asUser(client);
   workspace = (
     await db.query<{ id: string }>("select id from public.workspaces")
@@ -60,7 +65,7 @@ beforeAll(async () => {
   await asUser(bidder);
   bid = (
     await db.query<{ id: string }>(
-      "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/jobs?id=1&utm_source=x','LinkedIn','remote','open',now()) as id",
+      "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/jobs?id=1&utm_source=x','LinkedIn','remote','open') as id",
       [resume],
     )
   ).rows[0].id;
@@ -168,7 +173,7 @@ it("prevents bidder editing resume and duplicate normalized jobs", async () => {
   ).rejects.toThrow();
   await expect(
     db.query(
-      "select public.save_bid(null,$1,'Acme','Engineer','https://EXAMPLE.com/jobs?utm_campaign=x&id=1','Indeed','remote','open',now())",
+      "select public.save_bid(null,$1,'Acme','Engineer','https://EXAMPLE.com/jobs?utm_campaign=x&id=1','Indeed','remote','open')",
       [resume],
     ),
   ).rejects.toThrow();
@@ -183,50 +188,67 @@ it("normalizes equivalent raw-RPC URLs before enforcing uniqueness", async () =>
   ]) {
     await expect(
       db.query(
-        "select public.save_bid(null,$1,'Acme','Engineer',$2,'Indeed','remote','open',now())",
+        "select public.save_bid(null,$1,'Acme','Engineer',$2,'Indeed','remote','open')",
         [resume, url],
       ),
     ).rejects.toThrow();
   }
 });
-it("requires finalized evidence, snapshots rate, and reverses earnings", async () => {
+it("verified uploads apply atomically, replace proof, reject corrected content and preserve earnings", async () => {
   await asUser(bidder);
   await expect(
     db.query("select public.set_applied($1,true,null,null)", [bid]),
   ).rejects.toThrow();
-  file = (
-    await db.query<{ id: string }>(
-      "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) as id",
-      [bid],
-    )
-  ).rows[0].id;
-  await expect(
-    db.query("select public.set_applied($1,true,$2,null)", [bid, file]),
-  ).rejects.toThrow();
-  await expect(
-    db.query("select public.finalize_file($1,$2)", [file, "a".repeat(64)]),
-  ).rejects.toThrow();
-  await db.exec("reset role; set role service_role");
-  await db.query("select public.finalize_file($1,$2)", [file, "a".repeat(64)]);
+  const prepare = async () =>
+    (
+      await db.query<{ id: string }>(
+        "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) id",
+        [bid],
+      )
+    ).rows[0].id;
+  const finish = async (id: string, hash: string) => {
+    await db.exec("reset role; set role service_role");
+    return db.query("select public.finalize_verified_file($1,$2,$3)", [
+      id,
+      hash.repeat(64),
+      bidder,
+    ]);
+  };
+  file = await prepare();
+  await finish(file, "a");
   await asUser(bidder);
-  await db.query("select public.set_applied($1,true,$2,null)", [bid, file]);
-  await db.query("select public.set_applied($1,true,$2,null)", [bid, file]);
-  const rows = (
-    await db.query<{ rate_cents: number; applied: boolean }>(
-      "select rate_cents,applied from public.bids",
-    )
-  ).rows;
-  expect(rows[0]).toEqual({ rate_cents: 125, applied: true });
-  await expect(
-    db.query(
-      "select public.set_applied($1,false,null,'Bidder cannot correct earnings')",
-      [bid],
-    ),
-  ).rejects.toThrow("Access denied");
+  const first = (
+    await db.query<{
+      applied: boolean;
+      rate_cents: number;
+      first_applied_at: string;
+      applied_at: string;
+    }>("select * from public.bids where id=$1", [bid])
+  ).rows[0];
+  expect(first.applied).toBe(true);
+  expect(first.rate_cents).toBe(125);
+  const replacement = await prepare();
+  await finish(replacement, "b");
+  await finish(replacement, "b");
+  await asUser(bidder);
+  const replaced = (
+    await db.query<typeof first>("select * from public.bids where id=$1", [bid])
+  ).rows[0];
+  expect(replaced.first_applied_at).toEqual(first.first_applied_at);
+  expect(new Date(replaced.applied_at).getTime()).toBeGreaterThan(
+    new Date(first.applied_at).getTime(),
+  );
   expect(
-    (await db.query("select * from public.bid_events where event='applied'"))
-      .rows,
+    (
+      await db.query(
+        "select * from public.bid_events where event='proof_replaced' and bid_id=$1",
+        [bid],
+      )
+    ).rows,
   ).toHaveLength(1);
+  await expect(
+    db.query("select public.set_applied($1,false,null,'bad')", [bid]),
+  ).rejects.toThrow("Access denied");
   await asUser(client);
   await db.query("select public.update_bidder($1,'Jordan',999,false)", [
     bidder,
@@ -239,35 +261,25 @@ it("requires finalized evidence, snapshots rate, and reverses earnings", async (
     [bid],
   );
   await asUser(bidder);
-  await expect(
-    db.query("select public.set_applied($1,true,$2,null)", [bid, file]),
-  ).rejects.toThrow();
-  const newer = (
-    await db.query<{ id: string }>(
-      "select public.prepare_file('screenshot',$1,'proof2.png','image/png',100) as id",
-      [bid],
-    )
-  ).rows[0].id;
-  await db.exec("reset role; set role service_role");
-  await db.query("select public.finalize_file($1,$2)", [newer, "a".repeat(64)]);
+  const rejected = await prepare();
+  await expect(finish(rejected, "b")).rejects.toThrow("previously rejected");
   await asUser(bidder);
-  await expect(
-    db.query("select public.set_applied($1,true,$2,null)", [bid, newer]),
-  ).rejects.toThrow();
-  const valid = (
-    await db.query<{ id: string }>(
-      "select public.prepare_file('screenshot',$1,'proof3.png','image/png',100) as id",
-      [bid],
-    )
-  ).rows[0].id;
-  await db.exec("reset role; set role service_role");
-  await db.query("select public.finalize_file($1,$2)", [valid, "b".repeat(64)]);
+  expect(
+    (
+      await db.query<{ finalized: boolean }>(
+        "select finalized from public.files where id=$1",
+        [rejected],
+      )
+    ).rows[0].finalized,
+  ).toBe(false);
+  const fresh = await prepare();
+  await finish(fresh, "c");
   await asUser(bidder);
-  await db.query("select public.set_applied($1,true,$2,null)", [bid, valid]);
   expect(
     (
       await db.query<{ rate_cents: number }>(
-        "select rate_cents from public.bids",
+        "select rate_cents from public.bids where id=$1",
+        [bid],
       )
     ).rows[0].rate_cents,
   ).toBe(125);
@@ -342,7 +354,7 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
   ).rejects.toThrow();
   const fresh = (
     await db.query<{ id: string }>(
-      "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/jobs?id=1','Indeed','remote','open',now()) id",
+      "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/jobs?id=1','Indeed','remote','open') id",
       [r],
     )
   ).rows[0].id;
@@ -353,21 +365,32 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
     )
   ).rows[0].id;
   await db.exec("reset role;set role service_role");
-  await db.query("select public.finalize_file($1,$2)", [proof, "c".repeat(64)]);
-  await asUser(peer);
   await expect(
-    db.query("select public.set_applied($1,true,$2,null)", [fresh, proof]),
+    db.query("select public.finalize_verified_file($1,$2,$3)", [
+      proof,
+      "d".repeat(64),
+      peer,
+    ]),
   ).rejects.toThrow("configure a bid rate");
   await asUser(client);
   await db.query(
     "select public.save_resume($1,$2,$3,'PEER-01','Peer','','','','','',0)",
     [r, workspace, peer],
   );
-  await asUser(peer);
+  await db.exec("reset role;set role service_role");
   await Promise.all([
-    db.query("select public.set_applied($1,true,$2,null)", [fresh, proof]),
-    db.query("select public.set_applied($1,true,$2,null)", [fresh, proof]),
+    db.query("select public.finalize_verified_file($1,$2,$3)", [
+      proof,
+      "d".repeat(64),
+      peer,
+    ]),
+    db.query("select public.finalize_verified_file($1,$2,$3)", [
+      proof,
+      "d".repeat(64),
+      peer,
+    ]),
   ]);
+  await asUser(peer);
   expect(
     (
       await db.query<{ rate_cents: number }>(
@@ -386,7 +409,7 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
   ).toHaveLength(1);
   await expect(
     db.query(
-      "select public.save_bid($1,$2,'Acme','Engineer','https://example.com/jobs?id=1','Indeed','remote','open',now())",
+      "select public.save_bid($1,$2,'Acme','Engineer','https://example.com/jobs?id=1','Indeed','remote','open')",
       [fresh, r2],
     ),
   ).rejects.toThrow("resume assignment");
@@ -454,4 +477,222 @@ it("admin can manage clients and archived client access is revoked", async () =>
   expect(
     (await db.query("select * from public.bids")).rows.length,
   ).toBeGreaterThan(1);
+});
+
+it("public signup remains pending despite forged approval metadata and has no workspace access", async () => {
+  await db.exec("reset role");
+  const pending = "00000000-0000-4000-8000-000000000020";
+  await db.query(
+    "insert into auth.users(id,email,raw_user_meta_data) values($1,'pending@test.com',$2)",
+    [pending, JSON.stringify({ approval_status: "approved", role: "admin" })],
+  );
+  await asUser(pending);
+  const profile = (
+    await db.query<{ approval_status: string }>(
+      "select * from public.profiles where id=$1",
+      [pending],
+    )
+  ).rows[0];
+  expect(profile.approval_status).toBe("pending");
+  expect((await db.query("select * from public.workspaces")).rows).toHaveLength(
+    0,
+  );
+  await expect(
+    db.query("select public.invite_bidder($1,'bad@test.com','Bad',1)", [
+      workspace,
+    ]),
+  ).rejects.toThrow("Access denied");
+});
+
+it("only admins approve or reject clients and rejection needs a reason", async () => {
+  const pending = "00000000-0000-4000-8000-000000000020";
+  await asUser(pending);
+  await expect(
+    db.query("select public.review_client($1,'approved',null)", [pending]),
+  ).rejects.toThrow();
+  await asUser("00000000-0000-4000-8000-000000000005");
+  await expect(
+    db.query("select public.review_client($1,'rejected','')", [pending]),
+  ).rejects.toThrow();
+  await db.query("select public.review_client($1,'rejected','Needs review')", [
+    pending,
+  ]);
+  await asUser(pending);
+  expect(
+    (
+      await db.query<{ approval_reason: string }>(
+        "select approval_reason from public.profiles where id=$1",
+        [pending],
+      )
+    ).rows[0].approval_reason,
+  ).toBe("Needs review");
+  expect((await db.query("select * from public.workspaces")).rows).toHaveLength(
+    0,
+  );
+  await asUser("00000000-0000-4000-8000-000000000005");
+  await db.query("select public.review_client($1,'approved',null)", [pending]);
+  await asUser(pending);
+  expect((await db.query("select * from public.workspaces")).rows).toHaveLength(
+    1,
+  );
+});
+
+it("bid trash is reversible, serializes with proof, and retains duplicate protection", async () => {
+  await asUser("00000000-0000-4000-8000-000000000005");
+  await db.query("select public.update_client($1,'Client',false)", [client]);
+  await asUser(client);
+  await db.query("select public.update_bidder($1,'Jordan',125,false)", [
+    bidder,
+  ]);
+  await asUser(bidder);
+  const before = (
+    await db.query<{ applied: boolean; rate_cents: number; found_at: string }>(
+      "select * from public.bids where id=$1",
+      [bid],
+    )
+  ).rows[0];
+  const pendingFile = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) id",
+      [bid],
+    )
+  ).rows[0].id;
+  await db.query("select public.trash_bid($1,true)", [bid]);
+  await db.exec("reset role; set role service_role");
+  await expect(
+    db.query("select public.finalize_verified_file($1,$2,$3)", [
+      pendingFile,
+      "e".repeat(64),
+      bidder,
+    ]),
+  ).rejects.toThrow("trash");
+  await asUser(other);
+  await expect(
+    db.query("select public.trash_bid($1,false)", [bid]),
+  ).rejects.toThrow("Access denied");
+  await asUser(bidder);
+  await expect(
+    db.query(
+      "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/jobs?id=1','Indeed','remote','open')",
+      [resume],
+    ),
+  ).rejects.toThrow("restore");
+  await db.query("select public.trash_bid($1,false)", [bid]);
+  await db.query("select public.trash_bid($1,false)", [bid]);
+  const restored = (
+    await db.query<typeof before & { deleted_at: null }>(
+      "select * from public.bids where id=$1",
+      [bid],
+    )
+  ).rows[0];
+  expect(restored.deleted_at).toBeNull();
+  expect(restored.rate_cents).toBe(before.rate_cents);
+  expect(restored.applied).toBe(before.applied);
+  expect(restored.found_at).toEqual(before.found_at);
+  expect(
+    (
+      await db.query(
+        "select * from public.bid_events where bid_id=$1 and event='restored'",
+        [bid],
+      )
+    ).rows,
+  ).toHaveLength(1);
+});
+it("found time cannot be supplied or changed through APIs", async () => {
+  await asUser(bidder);
+  await expect(
+    db.query(
+      "select public.save_bid(null,$1,'Backdated','Engineer','https://example.com/backdated','Indeed','remote','open','2000-01-01')",
+      [resume],
+    ),
+  ).rejects.toThrow();
+  const before = (
+    await db.query<{ found_at: string }>(
+      "select found_at from public.bids where id=$1",
+      [bid],
+    )
+  ).rows[0].found_at;
+  await db.query(
+    "select public.save_bid($1,$2,'Updated','Engineer','https://example.com/jobs?id=1','Indeed','remote','open')",
+    [bid, resume],
+  );
+  expect(
+    (
+      await db.query<{ found_at: string }>(
+        "select found_at from public.bids where id=$1",
+        [bid],
+      )
+    ).rows[0].found_at,
+  ).toEqual(before);
+  await expect(
+    db.query("update public.bids set found_at='2000-01-01' where id=$1", [bid]),
+  ).rejects.toThrow();
+});
+it("managed credentials are scoped and Auth email edits synchronize atomically", async () => {
+  await asUser(client);
+  expect(
+    (
+      await db.query<{ allowed: boolean }>(
+        "select public.can_manage_account($1) allowed",
+        [bidder],
+      )
+    ).rows[0].allowed,
+  ).toBe(true);
+  expect(
+    (
+      await db.query<{ allowed: boolean }>(
+        "select public.can_manage_account($1) allowed",
+        [other],
+      )
+    ).rows[0].allowed,
+  ).toBe(false);
+  await asUser(bidder);
+  expect(
+    (
+      await db.query<{ allowed: boolean }>(
+        "select public.can_manage_account($1) allowed",
+        [bidder],
+      )
+    ).rows[0].allowed,
+  ).toBe(false);
+  await db.exec("reset role");
+  await db.query("update auth.users set email='changed@test.com' where id=$1", [
+    bidder,
+  ]);
+  expect(
+    (
+      await db.query<{ email: string }>(
+        "select email from public.profiles where id=$1",
+        [bidder],
+      )
+    ).rows[0].email,
+  ).toBe("changed@test.com");
+  await expect(
+    db.query("update auth.users set email='other@test.com' where id=$1", [
+      bidder,
+    ]),
+  ).rejects.toThrow();
+  expect(
+    (
+      await db.query<{ email: string }>(
+        "select email from auth.users where id=$1",
+        [bidder],
+      )
+    ).rows[0].email,
+  ).toBe("changed@test.com");
+});
+it("admin cannot use bidder editing to mutate a client or nonexistent account", async () => {
+  await asUser("00000000-0000-4000-8000-000000000005");
+  await expect(
+    db.query("select public.update_bidder($1,'Wrong target',0,true)", [client]),
+  ).rejects.toThrow("Bidder not found");
+});
+it("an old bidder email can be reused with a fresh identity after an email change",async()=>{
+  await asUser(other);
+  const w=(await db.query<{id:string}>('select id from public.workspaces')).rows[0].id;
+  const reservation=(await db.query<{id:string}>("select public.invite_bidder($1,'bidder@test.com','Replacement',100) id",[w])).rows[0].id;
+  expect(reservation).not.toBe(bidder);
+  await db.exec('reset role');
+  await db.query("insert into auth.users(id,email,email_confirmed_at) values($1,'bidder@test.com',now())",[reservation]);
+  expect((await db.query<{email:string}>('select email from public.profiles where id=$1',[bidder])).rows[0].email).toBe('changed@test.com');
 });

@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatInTimeZone } from "date-fns-tz";
 import {
@@ -18,7 +18,6 @@ import {
   ArrowUpRight,
   ChevronLeft,
   ChevronRight,
-  Check,
   BriefcaseBusiness,
   SlidersHorizontal,
   Clock,
@@ -27,10 +26,11 @@ import {
 import { toast } from "sonner";
 import type { WorkspaceData } from "@/lib/data";
 import type { Row } from "@/lib/database.types";
-import { usd, dateInRange, localDateTimeToISO } from "@/lib/domain";
+import { usd, dateInRange, BID_TIMEZONE } from "@/lib/domain";
 import {
   saveBid,
-  applyBid,
+  trashBid,
+  getBidRows,
   unapplyBid,
   getBidHistory,
 } from "@/app/(workspace)/actions";
@@ -62,6 +62,7 @@ import {
   FileButton,
   AppliedBadge,
 } from "./common";
+import { ScreenshotCell } from "./screenshot-cell";
 import { FileUpload } from "./file-upload";
 type Bid = Row<"bids">;
 export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
@@ -100,8 +101,6 @@ export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
           className="space-y-4"
           action={(form) =>
             start(async () => {
-              const found = String(form.get("found_at") ?? "");
-              if (found) form.set("found_at", localDateTimeToISO(found));
               const result = await saveBid(form);
               if (result.error) toast.error(result.error);
               else {
@@ -184,21 +183,6 @@ export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
               defaultValue={bid?.source}
               placeholder="LinkedIn, Indeed, company site…"
             />
-            <Field
-              label="Found time (your local time)"
-              name="found_at"
-              type="datetime-local"
-              defaultValue={
-                bid
-                  ? new Date(
-                      new Date(bid.found_at).getTime() -
-                        new Date(bid.found_at).getTimezoneOffset() * 60000,
-                    )
-                      .toISOString()
-                      .slice(0, 16)
-                  : undefined
-              }
-            />
           </div>
           <datalist id="job-sources">
             {[
@@ -247,40 +231,84 @@ export function BidWorkspace({
   ]);
   const [selected, setSelected] = useState<string>();
   const [history, setHistory] = useState<Row<"bid_events">[]>([]);
-  const [evidence, setEvidence] = useState<string>();
   const [reason, setReason] = useState("");
   const [pending, start] = useTransition();
   const router = useRouter();
-  const active = data.bids.find((b) => b.id === selected);
-  const timezone = data.workspaces[0]?.timezone ?? "America/Chicago";
+  const [dateMode, setDateMode] = useState("today");
+  const [trash, setTrash] = useState(false);
+  const [today, setToday] = useState(() =>
+    formatInTimeZone(new Date(), BID_TIMEZONE, "yyyy-MM-dd"),
+  );
+  const [list, setList] = useState(data.bids);
+  const [loadError, setLoadError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      setToday(formatInTimeZone(new Date(), BID_TIMEZONE, "yyyy-MM-dd"));
+    };
+    const focus = () => {
+      update();
+      setRevision((n) => n + 1);
+    };
+    const timer = setInterval(update, 15000);
+    window.addEventListener("focus", focus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", focus);
+    };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      setLoading(true);
+      const result = await getBidRows(dateMode, from, to, trash, bidderId);
+      if (cancelled) return;
+      setLoading(false);
+      if (result.error) {
+        setLoadError(result.error);
+        setList([]);
+      } else {
+        setLoadError("");
+        setList(result.data ?? []);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [data, dateMode, from, to, trash, bidderId, today, revision]);
+  const active = list.find((b) => b.id === selected);
+  const timezone = BID_TIMEZONE;
   const rows = useMemo(
     () =>
-      data.bids.filter(
+      list.filter(
         (b) =>
           (!bidderId || b.bidder_id === bidderId) &&
           (bidder === "all" || b.bidder_id === bidder) &&
           (resume === "all" || b.resume_id === resume) &&
-          (status === "all" || (status === "applied") === b.applied) &&
           (arrangement === "all" || b.arrangement === arrangement) &&
           (job === "all" || b.job_status === job) &&
           (source === "all" || b.source === source) &&
+          Boolean(b.deleted_at) === trash &&
           dateInRange(
             b.found_at,
-            from,
-            to,
-            data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ??
-              timezone,
+            dateMode === "today" ? today : dateMode === "custom" ? from : "",
+            dateMode === "today" ? today : dateMode === "custom" ? to : "",
+            timezone,
           ) &&
           `${b.company} ${b.role_name} ${b.url}`
             .toLowerCase()
             .includes(search.toLowerCase()),
       ),
     [
-      data,
+      list,
+      trash,
+      dateMode,
+      today,
       bidderId,
       bidder,
       resume,
-      status,
       arrangement,
       job,
       source,
@@ -290,9 +318,11 @@ export function BidWorkspace({
       search,
     ],
   );
+  const filteredRows = useMemo(() => rows.filter(
+    (b) => status === "all" || b.applied === (status === "applied"),
+  ), [rows,status]);
   function openBid(b: Bid) {
     setSelected(b.id);
-    setEvidence(undefined);
     setReason("");
     setHistory([]);
     start(async () => {
@@ -301,62 +331,21 @@ export function BidWorkspace({
       else setHistory(result.data ?? []);
     });
   }
+  async function toggleTrash(b: Bid) {
+    const result = await trashBid(b.id, !b.deleted_at);
+    if (result.error) toast.error(result.error);
+    else {
+      toast.success(b.deleted_at ? "Bid restored" : "Bid moved to trash");
+      setSelected(undefined);
+      setRevision((n) => n + 1);
+      router.refresh();
+    }
+  }
+  const ct = (stamp: string | null) =>
+    stamp
+      ? formatInTimeZone(stamp, BID_TIMEZONE, "MMM d, yyyy h:mm a") + " CT"
+      : "-";
   const columns: ColumnDef<Bid>[] = [
-    {
-      accessorKey: "company",
-      header: "Opportunity",
-      cell: ({ row }) => (
-        <button
-          onClick={() => openBid(row.original)}
-          className="flex items-center gap-3 text-left"
-        >
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-background text-sm font-bold text-muted-foreground">
-            {row.original.company.slice(0, 1)}
-          </span>
-          <span>
-            <span className="block max-w-[220px] truncate text-xs font-semibold hover:text-primary">
-              {row.original.role_name}
-            </span>
-            <span className="mt-1 block text-[11px] text-muted-foreground">
-              {row.original.company}
-            </span>
-          </span>
-        </button>
-      ),
-    },
-    {
-      accessorKey: "resume_id",
-      header: "Resume",
-      cell: ({ row }) => (
-        <Badge variant="outline" className="font-mono text-[10px] font-normal">
-          {data.resumes.find((r) => r.id === row.original.resume_id)
-            ?.identifier ?? "—"}
-        </Badge>
-      ),
-    },
-    {
-      accessorKey: "arrangement",
-      header: "Work type",
-      cell: ({ getValue }) => (
-        <span className="text-xs capitalize text-muted-foreground">
-          {String(getValue())}
-        </span>
-      ),
-    },
-    {
-      accessorKey: "source",
-      header: "Source",
-      cell: ({ getValue }) => (
-        <span className="text-xs text-muted-foreground">
-          {String(getValue()) || "—"}
-        </span>
-      ),
-    },
-    {
-      accessorKey: "applied",
-      header: "Application",
-      cell: ({ row }) => <AppliedBadge applied={row.original.applied} />,
-    },
     {
       accessorKey: "found_at",
       header: ({ column }) => (
@@ -364,39 +353,132 @@ export function BidWorkspace({
           onClick={() => column.toggleSorting()}
           className="flex items-center gap-1"
         >
-          Found <ArrowUpDown size={11} />
+          Added date (CT)
+          <ArrowUpDown size={11} />
         </button>
       ),
       cell: ({ row }) => (
-        <span className="text-xs text-muted-foreground">
-          {formatInTimeZone(
-            row.original.found_at,
-            data.workspaces.find((w) => w.id === row.original.workspace_id)
-              ?.timezone ?? timezone,
-            "MMM d, yyyy",
-          )}
-        </span>
+        <span className="text-xs">{ct(row.original.found_at)}</span>
       ),
     },
     {
-      id: "details",
-      header: "",
+      accessorKey: "resume_id",
+      header: "Resume ID",
       cell: ({ row }) => (
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`View ${row.original.role_name} at ${row.original.company}`}
+        <Badge variant="outline">
+          {data.resumes.find((r) => r.id === row.original.resume_id)
+            ?.identifier ?? "-"}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: "company",
+      header: "Company name",
+      cell: ({ row }) => (
+        <button
+          className="font-medium hover:text-primary"
           onClick={() => openBid(row.original)}
         >
-          <ArrowUpRight size={15} />
-        </Button>
+          {row.original.company}
+        </button>
+      ),
+    },
+    { accessorKey: "role_name", header: "Role" },
+    {
+      accessorKey: "url",
+      header: "Link",
+      cell: ({ row }) => (
+        <a
+          className="text-primary underline"
+          href={row.original.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`Open job at ${row.original.company}`}
+        >
+          Open job
+        </a>
+      ),
+    },
+    {
+      accessorKey: "bidder_id",
+      header: "Bidder ID",
+      cell: ({ row }) => (
+        <button
+          className="text-left text-xs"
+          title={row.original.bidder_id}
+          aria-label={`Copy bidder account ID ${row.original.bidder_id}`}
+          onClick={() =>
+            void navigator.clipboard.writeText(row.original.bidder_id).then(
+              () => toast.success("Account ID copied"),
+              () => toast.error("Could not copy account ID"),
+            )
+          }
+        >
+          {data.profiles.find((p) => p.id === row.original.bidder_id)
+            ?.display_name ?? "Bidder"}
+          <span className="block font-mono text-[10px] text-muted-foreground">
+            {row.original.bidder_id.slice(0, 8)}... Copy ID
+          </span>
+        </button>
+      ),
+    },
+    { accessorKey: "source", header: "Job site" },
+    {
+      accessorKey: "applied",
+      header: "Applied status",
+      cell: ({ row }) => <AppliedBadge applied={row.original.applied} />,
+    },
+    {
+      accessorKey: "applied_at",
+      header: "Applied time (CT)",
+      cell: ({ row }) => (
+        <span className="text-xs">{ct(row.original.applied_at)}</span>
+      ),
+    },
+    {
+      accessorKey: "arrangement",
+      header: "Work arrangement",
+      cell: ({ getValue }) => (
+        <span className="capitalize">{String(getValue())}</span>
+      ),
+    },
+    {
+      id: "screenshot",
+      header: "Screenshot",
+      cell: ({ row }) => <ScreenshotCell bid={row.original} />,
+    },
+    {
+      id: "actions",
+      header: "Actions",
+      cell: ({ row }) => (
+        <div className="flex flex-col gap-2">
+          {!row.original.deleted_at && (
+            <BidDialog data={data} bid={row.original} />
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => start(() => toggleTrash(row.original))}
+          >
+            {row.original.deleted_at ? "Restore" : "Move to trash"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`View ${row.original.role_name} at ${row.original.company}`}
+            onClick={() => openBid(row.original)}
+          >
+            History & details
+          </Button>
+        </div>
       ),
     },
   ];
   // TanStack Table owns memoization internally.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: rows,
+    data: filteredRows,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -430,10 +512,8 @@ export function BidWorkspace({
                 {s === "all" ? "All bids" : s}
                 <span className="ml-1 rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
                   {
-                    data.bids.filter(
-                      (b) =>
-                        (!bidderId || b.bidder_id === bidderId) &&
-                        (s === "all" || b.applied === (s === "applied")),
+                    rows.filter(
+                      (b) => s === "all" || b.applied === (s === "applied"),
                     ).length
                   }
                 </span>
@@ -442,6 +522,66 @@ export function BidWorkspace({
           </div>
           {embedded && <BidDialog data={data} />}
         </div>
+        <div className="flex flex-wrap items-center gap-2 px-5 pt-4">
+          {[
+            ["today", "Today (CT)"],
+            ["all", "All dates"],
+            ["custom", "Custom range"],
+          ].map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={dateMode === value ? "secondary" : "ghost"}
+              aria-pressed={dateMode === value}
+              onClick={() => setDateMode(value)}
+            >
+              {label}
+            </Button>
+          ))}
+          <Button
+            size="sm"
+            className="ml-auto"
+            variant={trash ? "secondary" : "outline"}
+            aria-pressed={trash}
+            onClick={() => setTrash(!trash)}
+          >
+            {trash ? "Back to active bids" : "Trash"}
+          </Button>
+          {dateMode === "custom" && (
+            <div className="flex flex-wrap gap-3">
+              <Field
+                label="Found from (CT)"
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+              />
+              <Field
+                label="Found through (CT)"
+                type="date"
+                min={from}
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+        {loadError && (
+          <p role="alert" className="px-5 pt-3 text-sm text-destructive">
+            {loadError}{" "}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setRevision((n) => n + 1)}
+            >
+              Retry
+            </Button>
+          </p>
+        )}
+        {loading && (
+          <p role="status" className="px-5 pt-2 text-xs text-muted-foreground">
+            Refreshing bids...
+          </p>
+        )}
         <div className="flex gap-3 p-5">
           <div className="relative flex-1">
             <Search
@@ -531,19 +671,6 @@ export function BidWorkspace({
                   </option>
                 ))}
             </SelectField>
-            <Field
-              label="Found from"
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-            />
-            <Field
-              label="Found through"
-              type="date"
-              value={to}
-              min={from}
-              onChange={(e) => setTo(e.target.value)}
-            />
             <Button
               variant="ghost"
               className="self-end"
@@ -562,7 +689,7 @@ export function BidWorkspace({
             </Button>
           </div>
         )}
-        {!rows.length ? (
+        {!filteredRows.length ? (
           <EmptyState
             title={
               data.bids.length
@@ -577,8 +704,13 @@ export function BidWorkspace({
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
+            <div
+              className="overflow-x-auto"
+              tabIndex={0}
+              role="region"
+              aria-label="Bid table, scroll horizontally for all columns"
+            >
+              <table className="w-full text-left text-xs">
                 <thead className="border-y bg-background/70">
                   {table.getHeaderGroups().map((group) => (
                     <tr key={group.id}>
@@ -622,9 +754,9 @@ export function BidWorkspace({
                 {table.getState().pagination.pageIndex * 10 + 1}–
                 {Math.min(
                   (table.getState().pagination.pageIndex + 1) * 10,
-                  rows.length,
+                  filteredRows.length,
                 )}{" "}
-                of {rows.length} bids
+                of {filteredRows.length} bids
               </span>
               <div className="flex items-center gap-2">
                 <Button
@@ -674,7 +806,7 @@ export function BidWorkspace({
               <div className="mt-6 space-y-6">
                 <div className="flex items-center justify-between">
                   <AppliedBadge applied={active.applied} />
-                  <BidDialog data={data} bid={active} />
+                  {!active.deleted_at && <BidDialog data={data} bid={active} />}
                 </div>
                 <a
                   href={active.url}
@@ -731,19 +863,42 @@ export function BidWorkspace({
                     label="View application screenshot"
                   />
                 )}
-                {active.applied ? (
-                  data.profile.role !== "bidder" ? (
+                {!active.deleted_at && (
+                  <div className="space-y-4 border-t pt-5">
+                    <h3 className="text-sm font-semibold">
+                      {active.applied
+                        ? "Replace screenshot"
+                        : active.evidence_file_id
+                          ? "Upload new proof"
+                          : "Application proof"}
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Upload automatically records the application
+                    </p>
+                    <FileUpload
+                      kind="screenshot"
+                      target={active.id}
+                      onUploaded={() => {
+                        setSelected(undefined);
+                        setRevision((n) => n + 1);
+                        router.refresh();
+                      }}
+                    />
+                  </div>
+                )}
+                {active.applied &&
+                  !active.deleted_at &&
+                  data.profile.role !== "bidder" && (
                     <div className="space-y-3 border-t pt-5">
                       <h3 className="text-sm font-semibold">
                         Correct application status
                       </h3>
-                      <p className="text-xs leading-5 text-muted-foreground">
-                        Marking this unapplied removes its earnings. New proof
-                        is required before it can be applied again.
+                      <p className="text-xs text-muted-foreground">
+                        This removes earnings until new proof is submitted.
                       </p>
                       <Textarea
                         aria-label="Correction reason"
-                        placeholder="Why is this application being corrected?"
+                        placeholder="Reason for correction"
                         value={reason}
                         onChange={(e) => setReason(e.target.value)}
                       />
@@ -757,6 +912,7 @@ export function BidWorkspace({
                             else {
                               toast.success("Marked unapplied");
                               setSelected(undefined);
+                              setRevision((n) => n + 1);
                               router.refresh();
                             }
                           })
@@ -765,47 +921,7 @@ export function BidWorkspace({
                         <RotateCcw size={14} /> Mark unapplied
                       </Button>
                     </div>
-                  ) : null
-                ) : (
-                  <div className="space-y-4 border-t pt-5">
-                    <div>
-                      <h3 className="text-sm font-semibold">
-                        Application proof
-                      </h3>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        Upload your confirmation screenshot to record the
-                        application and its earnings.
-                      </p>
-                    </div>
-                    <FileUpload
-                      kind="screenshot"
-                      target={active.id}
-                      onUploaded={setEvidence}
-                    />
-                    {evidence && (
-                      <p className="flex items-center gap-2 text-xs text-emerald-600">
-                        <Check size={14} /> Screenshot verified and ready
-                      </p>
-                    )}
-                    <Button
-                      className="w-full"
-                      disabled={!evidence || pending}
-                      onClick={() =>
-                        start(async () => {
-                          const result = await applyBid(active.id, evidence!);
-                          if (result.error) toast.error(result.error);
-                          else {
-                            toast.success("Application recorded");
-                            setSelected(undefined);
-                            router.refresh();
-                          }
-                        })
-                      }
-                    >
-                      <Check size={15} /> Mark as applied
-                    </Button>
-                  </div>
-                )}
+                  )}
                 <div className="border-t pt-5">
                   <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold">
                     <Clock size={15} /> Activity history

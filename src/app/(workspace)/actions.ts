@@ -6,17 +6,21 @@ import {
   normalizeJobUrl,
   moneyToCents,
   validateUpload,
-  parseTimestamp,
+  chicagoDateRange,
 } from "@/lib/domain";
 import type { Database } from "@/lib/database.types";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { validateScreenshotBytes } from "@/lib/image-validation";
 
 type Result<T = undefined> = { data?: T; error?: string };
-async function perform<T>(fn: () => Promise<T>): Promise<Result<T>> {
+async function perform<T>(
+  fn: () => Promise<T>,
+  mutate = true,
+): Promise<Result<T>> {
   try {
     const data = await fn();
-    revalidatePath("/", "layout");
+    if (mutate) revalidatePath("/", "layout");
     return { data };
   } catch (e) {
     const message =
@@ -54,9 +58,6 @@ export async function saveBid(form: FormData) {
       p_source: text(form, "source"),
       p_arrangement: text(form, "arrangement"),
       p_status: text(form, "job_status"),
-      p_found: text(form, "found_at")
-        ? parseTimestamp(text(form, "found_at"))
-        : null,
     });
   });
 }
@@ -84,25 +85,113 @@ export async function archiveResume(resumeId: string, archived: boolean) {
       await rpc("archive_resume", { p_id: resumeId, p_archived: archived }),
   );
 }
+async function changeManagedEmail(form: FormData, role: "client" | "bidder") {
+  const account = z.uuid().parse(text(form, "user_id"));
+  const allowed = await rpc("can_manage_account", { p_account: account });
+  if (!allowed) throw new Error("Access denied");
+  const { supabase } = await getContext();
+  const { data: target } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", account)
+    .single();
+  if (target?.role !== role) throw new Error("Account type does not match");
+  const email = text(form, "email");
+  if (email) {
+    z.email().parse(email);
+    const { error } = await adminClient().auth.admin.updateUserById(account, {
+      email: email.toLowerCase(),
+      email_confirm: true,
+    });
+    if (error) throw new Error(error.message);
+  }
+}
 export async function updateBidder(form: FormData) {
-  return perform(
-    async () =>
-      await rpc("update_bidder", {
-        p_bidder: text(form, "user_id"),
-        p_name: text(form, "display_name"),
-        p_rate: moneyToCents(text(form, "rate")),
-        p_archived: text(form, "archived") === "true",
-      }),
-  );
+  return perform(async () => {
+    const rate = moneyToCents(text(form, "rate"));
+    if (!text(form, "display_name")) throw new Error("Name required");
+    await changeManagedEmail(form, "bidder");
+    await rpc("update_bidder", {
+      p_bidder: text(form, "user_id"),
+      p_name: text(form, "display_name"),
+      p_rate: rate,
+      p_archived: text(form, "archived") === "true",
+    });
+  });
 }
 export async function updateClient(form: FormData) {
-  return perform(
-    async () =>
-      await rpc("update_client", {
-        p_client: text(form, "user_id"),
-        p_name: text(form, "display_name"),
-        p_archived: text(form, "archived") === "true",
-      }),
+  return perform(async () => {
+    const { profile } = await getContext();
+    if (profile.role !== "admin") throw new Error("Access denied");
+    if (!text(form, "display_name")) throw new Error("Name required");
+    await changeManagedEmail(form, "client");
+    await rpc("update_client", {
+      p_client: text(form, "user_id"),
+      p_name: text(form, "display_name"),
+      p_archived: text(form, "archived") === "true",
+    });
+  });
+}
+export async function reviewClient(
+  account: string,
+  status: "approved" | "rejected",
+  reason: string,
+) {
+  return perform(async () =>
+    rpc("review_client", {
+      p_client: account,
+      p_status: status,
+      p_reason: reason,
+    }),
+  );
+}
+export async function resetManagedPassword(
+  account: string,
+  confirmed: boolean,
+) {
+  return perform(async () => {
+    if (confirmed !== true) throw new Error("Confirm the password reset first");
+    if (
+      !(await rpc("can_manage_account", { p_account: z.uuid().parse(account) }))
+    )
+      throw new Error("Access denied");
+    const { error } = await adminClient().auth.admin.updateUserById(account, {
+      password: "123456",
+    });
+    if (error) throw new Error(error.message);
+    await rpc("record_account_event", {
+      p_account: account,
+      p_event: "password_reset",
+    });
+  });
+}
+export async function createClientAccount(form: FormData) {
+  return perform(async () => {
+    const { profile } = await getContext();
+    if (profile.role !== "admin") throw new Error("Access denied");
+    const email = z.email().parse(text(form, "email")).toLowerCase();
+    const name = z.string().min(1).max(100).parse(text(form, "display_name"));
+    const { data, error } = await adminClient().auth.admin.createUser({
+      email,
+      password: "123456",
+      email_confirm: true,
+      user_metadata: { display_name: name },
+    });
+    if (error) throw new Error(error.message);
+    await rpc("review_client", {
+      p_client: data.user.id,
+      p_status: "approved",
+      p_reason: null,
+    });
+    await rpc("record_account_event", {
+      p_account: data.user.id,
+      p_event: "created",
+    });
+  });
+}
+export async function trashBid(bid: string, deleted: boolean) {
+  return perform(async () =>
+    rpc("trash_bid", { p_bid: z.uuid().parse(bid), p_deleted: deleted }),
   );
 }
 export async function createBidder(form: FormData) {
@@ -131,17 +220,6 @@ export async function createBidder(form: FormData) {
         `Account creation could not finish: ${createError.message}. Retry from pending accounts.`,
       );
   });
-}
-export async function applyBid(bidId: string, fileId: string) {
-  return perform(
-    async () =>
-      await rpc("set_applied", {
-        p_bid: bidId,
-        p_applied: true,
-        p_file: fileId,
-        p_reason: null,
-      }),
-  );
 }
 export async function unapplyBid(bidId: string, reason: string) {
   return perform(
@@ -232,11 +310,17 @@ export async function finalizeUpload(fileId: string) {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     if (!matchesSignature(bytes, file.mime))
       throw new Error("The file contents do not match its type.");
+    if (file.kind === "screenshot")
+      await validateScreenshotBytes(bytes, file.mime);
     const sha = createHash("sha256").update(bytes).digest("hex");
-    const { error: finalError } = await adminClient().rpc("finalize_file", {
-      p_id: file.id,
-      p_sha: sha,
-    });
+    const { error: finalError } = await adminClient().rpc(
+      "finalize_verified_file",
+      {
+        p_actor: profile.id,
+        p_id: file.id,
+        p_sha: sha,
+      },
+    );
     if (finalError) throw new Error(finalError.message);
     return file.id;
   });
@@ -256,7 +340,7 @@ export async function getFileUrl(fileId: string) {
       .createSignedUrl(file.storage_path, 60);
     if (storageError) throw new Error(storageError.message);
     return { url: data.signedUrl, name: file.filename, mime: file.mime };
-  });
+  }, false);
 }
 export async function getBidHistory(bidId: string) {
   return perform(async () => {
@@ -268,5 +352,43 @@ export async function getBidHistory(bidId: string) {
       .order("created_at", { ascending: false });
     if (error) throw new Error(error.message);
     return data;
-  });
+  }, false);
+}
+
+export async function getBidRows(
+  mode: string,
+  from: string,
+  to: string,
+  trash: boolean,
+  bidderId?: string,
+) {
+  // Reads deliberately do not invalidate the route (thumbnail reads must not loop).
+  try {
+    const { supabase } = await getContext();
+    const bounds = chicagoDateRange(mode, from, to);
+    const rows: Database["public"]["Tables"]["bids"]["Row"][] = [];
+    for (let offset = 0; ; offset += 1000) {
+      let query = supabase
+        .from("bids")
+        .select("*")
+        .order("found_at", { ascending: false })
+        .order("id")
+        .range(offset, offset + 999);
+      query = trash
+        ? query.not("deleted_at", "is", null)
+        : query.is("deleted_at", null);
+      if (bounds.from) query = query.gte("found_at", bounds.from);
+      if (bounds.to) query = query.lt("found_at", bounds.to);
+      if (bidderId) query = query.eq("bidder_id", z.uuid().parse(bidderId));
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
+    return { data: rows };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "Could not load bids",
+    };
+  }
 }

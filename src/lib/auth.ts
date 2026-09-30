@@ -18,6 +18,8 @@ export const getContext = cache(async () => {
       "Your workspace is not ready. The database migration must be installed before using the application.",
     );
   if (profile.archived) redirect("/auth/inactive");
+  if (profile.role === "client" && profile.approval_status !== "approved")
+    redirect("/auth/approval");
   const { data: workspaces, error: workspaceError } = await supabase
     .from("workspaces")
     .select("*")

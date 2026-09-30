@@ -26,9 +26,11 @@ const map = (type) =>
       ? "number"
       : type === "boolean"
         ? "boolean"
-        : type === "void"
-          ? "undefined"
-          : "string";
+        : ["json", "jsonb"].includes(type)
+          ? "unknown"
+          : type === "void"
+            ? "undefined"
+            : "string";
 const { rows: columns } = await db.query(
   `select table_name,column_name,data_type,udt_name,is_nullable from information_schema.columns where table_schema='public' order by table_name,ordinal_position`,
 );

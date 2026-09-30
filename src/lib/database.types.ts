@@ -2,6 +2,33 @@
 export type Database = {
   public: {
     Tables: {
+      account_events: {
+        Row: {
+          id: string;
+          account_id: string;
+          actor_id: string;
+          event: string;
+          reason: string | null;
+          created_at: string;
+        };
+        Insert: Partial<{
+          id: string;
+          account_id: string;
+          actor_id: string;
+          event: string;
+          reason: string | null;
+          created_at: string;
+        }>;
+        Update: Partial<{
+          id: string;
+          account_id: string;
+          actor_id: string;
+          event: string;
+          reason: string | null;
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
       bid_events: {
         Row: {
           id: string;
@@ -11,6 +38,7 @@ export type Database = {
           reason: string | null;
           file_id: string | null;
           created_at: string;
+          details: unknown | null;
         };
         Insert: Partial<{
           id: string;
@@ -20,6 +48,7 @@ export type Database = {
           reason: string | null;
           file_id: string | null;
           created_at: string;
+          details: unknown | null;
         }>;
         Update: Partial<{
           id: string;
@@ -29,6 +58,7 @@ export type Database = {
           reason: string | null;
           file_id: string | null;
           created_at: string;
+          details: unknown | null;
         }>;
         Relationships: [];
       };
@@ -75,6 +105,8 @@ export type Database = {
           rejected_hashes: string[];
           version: number;
           created_at: string;
+          deleted_at: string | null;
+          deleted_by: string | null;
         };
         Insert: Partial<{
           id: string;
@@ -97,6 +129,8 @@ export type Database = {
           rejected_hashes: string[];
           version: number;
           created_at: string;
+          deleted_at: string | null;
+          deleted_by: string | null;
         }>;
         Update: Partial<{
           id: string;
@@ -119,6 +153,8 @@ export type Database = {
           rejected_hashes: string[];
           version: number;
           created_at: string;
+          deleted_at: string | null;
+          deleted_by: string | null;
         }>;
         Relationships: [];
       };
@@ -214,6 +250,10 @@ export type Database = {
           role: string;
           archived: boolean;
           created_at: string;
+          approval_status: string;
+          approval_reason: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
         };
         Insert: Partial<{
           id: string;
@@ -222,6 +262,10 @@ export type Database = {
           role: string;
           archived: boolean;
           created_at: string;
+          approval_status: string;
+          approval_reason: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
         }>;
         Update: Partial<{
           id: string;
@@ -230,6 +274,10 @@ export type Database = {
           role: string;
           archived: boolean;
           created_at: string;
+          approval_status: string;
+          approval_reason: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
         }>;
         Relationships: [];
       };
@@ -329,9 +377,9 @@ export type Database = {
         Args: { w: string | null; b: string | null };
         Returns: boolean;
       };
-      finalize_file: {
-        Args: { p_id: string | null; p_sha: string | null };
-        Returns: undefined;
+      can_manage_account: {
+        Args: { p_account: string | null };
+        Returns: boolean;
       };
       invite_bidder: {
         Args: {
@@ -380,20 +428,6 @@ export type Database = {
         Args: { p_id: string | null; p_archived: boolean | null };
         Returns: undefined;
       };
-      save_bid: {
-        Args: {
-          p_id: string | null;
-          p_resume: string | null;
-          p_company: string | null;
-          p_role: string | null;
-          p_url: string | null;
-          p_source: string | null;
-          p_arrangement: string | null;
-          p_status: string | null;
-          p_found: string | null;
-        };
-        Returns: string;
-      };
       prepare_file: {
         Args: {
           p_kind: string | null;
@@ -410,6 +444,43 @@ export type Database = {
           p_applied: boolean | null;
           p_file: string | null;
           p_reason: string | null;
+        };
+        Returns: undefined;
+      };
+      review_client: {
+        Args: {
+          p_client: string | null;
+          p_status: string | null;
+          p_reason: string | null;
+        };
+        Returns: undefined;
+      };
+      record_account_event: {
+        Args: { p_account: string | null; p_event: string | null };
+        Returns: undefined;
+      };
+      save_bid: {
+        Args: {
+          p_id: string | null;
+          p_resume: string | null;
+          p_company: string | null;
+          p_role: string | null;
+          p_url: string | null;
+          p_source: string | null;
+          p_arrangement: string | null;
+          p_status: string | null;
+        };
+        Returns: string;
+      };
+      trash_bid: {
+        Args: { p_bid: string | null; p_deleted: boolean | null };
+        Returns: undefined;
+      };
+      finalize_verified_file: {
+        Args: {
+          p_id: string | null;
+          p_sha: string | null;
+          p_actor: string | null;
         };
         Returns: undefined;
       };

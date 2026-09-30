@@ -41,9 +41,10 @@ test("bid table search, filters and details show the correct application", async
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Search bids" }).fill("Linear");
   await expect(
-    page.getByRole("cell", { name: "Senior Frontend Engineer Linear" }),
+    page.getByRole("cell", { name: "Linear", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("1–1 of 1 bids")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page
     .getByRole("button", { name: "View Senior Frontend Engineer at Linear" })
     .click();
@@ -52,7 +53,10 @@ test("bid table search, filters and details show the correct application", async
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Mark as applied" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Upload automatically records the application"),
+  ).toBeVisible();
 });
 test("resume details and earnings render their scoped data", async ({
   page,
@@ -67,4 +71,32 @@ test("resume details and earnings render their scoped data", async ({
     page.getByRole("heading", { name: "Every effort adds up." }),
   ).toBeVisible();
   await expect(page.getByText("$10.00").first()).toBeVisible();
+});
+
+test("daily table has ordered workflow columns, automatic timestamps and trash controls", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await expect(
+    page.getByRole("button", { name: "Today (CT)", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("columnheader")).toHaveText([
+    "Added date (CT)",
+    "Resume ID",
+    "Company name",
+    "Role",
+    "Link",
+    "Bidder ID",
+    "Job site",
+    "Applied status",
+    "Applied time (CT)",
+    "Work arrangement",
+    "Screenshot",
+    "Actions",
+  ]);
+  await expect(page.getByText("1\u20131 of 1 bids")).toBeVisible();
+  await page.getByRole("button", { name: "All dates", exact: true }).click();
+  await expect(page.getByText("1\u201310 of 12 bids")).toBeVisible();
+  await page.getByRole("button", { name: "Add bid", exact: true }).click();
+  await expect(page.getByLabel(/Found time/)).toHaveCount(0);
 });
