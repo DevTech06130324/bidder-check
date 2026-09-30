@@ -188,3 +188,110 @@ test("Sheets mapping creates an editable preview and blocks invalid rows", async
     page.getByRole("button", { name: "Import 1 bids", exact: true }),
   ).toBeEnabled();
 });
+test("inline conflict preserves the draft and requires review before retry", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  const company = page.locator('[data-grid-r="0"][data-field="company"]');
+  await company.dblclick();
+  const editor = page.getByRole("textbox", {
+    name: "Edit company",
+    exact: true,
+  });
+  await expect(editor).toBeFocused();
+  await editor.fill("My draft");
+  await page.evaluate(async () => {
+    const path = "/actions.ts";
+    const action = await import(path);
+    await action.updateBidCell("bid-0", "company", "Another edit", 0);
+  });
+  await editor.press("Enter");
+  await expect(
+    page.getByText("Latest: Another edit", { exact: true }),
+  ).toBeVisible();
+  await expect(editor).toHaveValue("My draft");
+  await page
+    .getByRole("button", {
+      name: "Use latest version and keep draft",
+      exact: true,
+    })
+    .click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(company).toContainText("My draft");
+});
+test("tabular paste on the selected grid opens creation without overwriting", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  const cell = page.locator('[data-grid-r="0"][data-field="company"]');
+  await cell.click();
+  await cell.evaluate((el) => {
+    const data = new DataTransfer();
+    data.setData(
+      "text/plain",
+      "New Company\tNew Role\thttps://example.com/new",
+    );
+    el.dispatchEvent(
+      new ClipboardEvent("paste", { bubbles: true, clipboardData: data }),
+    );
+  });
+  await expect(
+    page.getByRole("heading", {
+      name: "Paste new bids from Sheets",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Copied Google Sheets cells")).toHaveValue(
+    "New Company\tNew Role\thttps://example.com/new",
+  );
+  await page.keyboard.press("Escape");
+  await expect(cell).toHaveText("Linear");
+});
+test("keyboard focus initializes grid navigation without a mouse", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page.locator('[data-grid-r="0"][data-grid-c="0"]').focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("F2");
+  await expect(
+    page.getByRole("textbox", { name: "Edit company", exact: true }),
+  ).toBeFocused();
+});
+test("removing the last page clamps pagination and selection", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page.getByRole("button", { name: "All dates", exact: true }).click();
+  await page.getByRole("button", { name: "Next page", exact: true }).click();
+  await expect(page.getByText("11\u201312 of 12 bids")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Move to trash", exact: true })
+    .last()
+    .click();
+  await expect(page.getByText("11\u201311 of 11 bids")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Move to trash", exact: true })
+    .last()
+    .click();
+  await expect(page.getByText("1\u201310 of 10 bids")).toBeVisible();
+});
+test("selection clears when edited rows leave the filter", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page.getByRole("button", { name: "All dates", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Search bids", exact: true })
+    .fill("Engineer");
+  const cell = page.locator('[data-field="role_name"]').last();
+  await cell.dblclick();
+  const editor = page.getByRole("textbox", {
+    name: "Edit role_name",
+    exact: true,
+  });
+  await editor.fill("Director");
+  await editor.press("Enter");
+  await expect(
+    page.locator('[role="gridcell"][aria-selected="true"]'),
+  ).toHaveCount(0);
+});

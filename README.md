@@ -38,7 +38,15 @@ The first application records the effective rate (resume override or bidder defa
 
 ## Daily bid workflow
 
-Found time is assigned by PostgreSQL and cannot be supplied or edited. Found and latest Applied timestamps display in America/Chicago (CT), including DST. The bid table defaults to Today (CT), with All dates and Custom range options plus a recoverable Trash view. A separate filtered query keeps table dates independent from reports. Private screenshot thumbnails load for visible rows, refresh their short-lived URLs, and open an enlarged viewer. Inline uploads support selection, drag/drop, paste, progress and retry.
+Normal Add bid assigns Found time in PostgreSQL; existing dates cannot be edited. Imports can assign a historical CT date. Found and latest Applied timestamps display in America/Chicago (CT), including DST. The bid table defaults to Today (CT), with Yesterday (CT), All dates and Custom range options plus a recoverable Trash view. A separate filtered query keeps table dates independent from reports. Private screenshot thumbnails load for visible rows, refresh their short-lived URLs, and open an enlarged viewer. Inline uploads support selection, drag/drop, paste, progress and retry.
+
+## Spreadsheet editing and Sheets imports
+
+Click a cell to select it; double-click, Enter or F2 edits supported fields. Enter, Tab or leaving the editor saves; Escape cancels. Arrow keys navigate, and Shift-arrow, Shift-click or dragging selects a rectangle on the current page. Ctrl/Cmd+C copies the range as TSV, including complete job URLs and bidder IDs. Read-only dates, ownership, application status and evidence retain their existing controls. Conflicting edits show the latest database value alongside the retained draft.
+
+**Paste from Sheets** creates new bids only. Choose one bidder, resume and CT Added date, paste cells, map columns, then fix or remove every invalid row in the preview. The optional header checkbox starts off. Shared defaults fill blank mapped cells. Limits are 500 rows and 512 KiB of clipboard text; mapped JSON has a 2 MiB limit to accommodate escaping/defaults. Formula-like strings remain plain values in the app. Imports are atomic, detect URLs in active bids and trash, and use actor-scoped request receipts to avoid duplicates after a lost response. Today gets the server timestamp; historical days use Chicago midnight. Imported bids start unapplied without earnings.
+
+`update_bid_cell` checks the expected version and records audit history. `validate_bid_import` and `import_bids` independently enforce role/ownership, fields, duplicates and dates. Import receipts remain private to their actor and accessible workspace. Today and Yesterday use CT calendar boundaries and defer refreshes during an active edit.
 
 ## Verification
 
@@ -53,7 +61,7 @@ npm run test:e2e
 
 Database tests execute all migrations in PGlite PostgreSQL with test equivalents of Supabase's Auth and Storage schemas and `auth.uid()`. They exercise RLS with an `authenticated` database role. Hosted Auth and Storage HTTP are checked separately by `scripts/hosted-smoke.mjs`.
 
-Browser tests exercise real authentication pages and the workspace components using synthetic fixtures in an isolated Vite server (`tests/preview`). Fixture mutation handlers deliberately refuse writes. This verifies layout, filters, navigation, theme changes and accessibility; it does not replace a hosted authenticated workflow test. The production app never serves these fixtures. On restricted Windows hosts, browser tests may need permission to stop their own server processes.
+Browser tests exercise real authentication pages and the workspace components using synthetic fixtures in an isolated Vite server (`tests/preview`). Fixture handlers simulate cell edits and validation only; other writes remain disabled. This verifies layout, filters, navigation, theme changes and accessibility; it does not replace a hosted authenticated workflow test. The production app never serves these fixtures. On restricted Windows hosts, browser tests may need permission to stop their own server processes.
 
 `node scripts/generate-types.mjs` generates TypeScript types from the executable migration without Docker. After a local Supabase startup, `npm run db:types` can regenerate from the live schema.
 

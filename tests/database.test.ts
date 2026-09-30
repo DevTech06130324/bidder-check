@@ -874,3 +874,55 @@ it("imports enforce limits, permissions, dates, receipt privacy and locked resum
     ]),
   ).rejects.toThrow(/locked/);
 });
+it("canonicalizes raw Unicode/spaces and rejects invalid HTTP authorities in database writes", async () => {
+  await db.exec("reset role");
+  const normalize = async (url: string) =>
+    (
+      await db.query<{ u: string }>("select public.normalize_job_url($1) u", [
+        url,
+      ])
+    ).rows[0].u;
+  expect(await normalize("https://example.com/r\u00e9sum\u00e9")).toBe(
+    await normalize("https://example.com/r%C3%A9sum%C3%A9"),
+  );
+  expect(await normalize("https://example.com/job here")).toBe(
+    await normalize("https://example.com/job%20here"),
+  );
+  await expect(normalize("https://example.com:99999/job")).rejects.toThrow();
+  await expect(normalize("https://127.1/job")).rejects.toThrow();
+  expect(await normalize("https://example.com:00444/a")).toBe(
+    "https://example.com:444/a",
+  );
+  await asUser(bidder);
+  const rid = (
+    await db.query<{ id: string }>(
+      "select id from public.resumes where identifier='SHEET-01'",
+    )
+  ).rows[0].id;
+  const id = (
+    await db.query<{ id: string }>(
+      "select public.save_bid(null,$1,'Unicode','Role','https://example.com/r%C3%A9sum%C3%A9','','remote','open') id",
+      [rid],
+    )
+  ).rows[0].id;
+  await db.query("select public.trash_bid($1,true)", [id]);
+  const errors = (
+    await db.query<{ e: { message: string }[] }>(
+      "select public.validate_bid_import($1,'2026-03-08',$2::jsonb) e",
+      [
+        rid,
+        JSON.stringify([
+          {
+            company: "A",
+            role_name: "R",
+            url: "https://example.com/r\u00e9sum\u00e9",
+            source: "",
+            arrangement: "remote",
+            job_status: "open",
+          },
+        ]),
+      ],
+    )
+  ).rows[0].e;
+  expect(errors[0].message).toMatch(/restore/);
+});

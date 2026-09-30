@@ -13,7 +13,6 @@ export const authenticate = unavailable,
   reviewClient = unavailable,
   resetManagedPassword = unavailable,
   createClientAccount = unavailable,
-  trashBid = unavailable,
   unapplyBid = unavailable,
   saveSettings = unavailable,
   prepareUpload = unavailable,
@@ -69,3 +68,13 @@ export async function checkBidImport(
   return { data: validateImportRows(rows) };
 }
 export const importBids = unavailable;
+
+export async function trashBid(id: string, deleted: boolean) {
+  const { fixture } = await import("./sample-data");
+  fixture.bids = fixture.bids.map((b) =>
+    b.id === id
+      ? { ...b, deleted_at: deleted ? new Date().toISOString() : null }
+      : b,
+  );
+  return { data: undefined };
+}

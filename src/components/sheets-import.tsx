@@ -196,6 +196,7 @@ export function SheetsImport({
               {data.profile.role === "admin" && (
                 <SelectField
                   label="Client workspace"
+                  disabled={!!bidderId}
                   value={workspace}
                   onChange={(e) => {
                     setWorkspace(e.target.value);

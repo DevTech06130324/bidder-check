@@ -51,6 +51,7 @@ export function BidGrid({
     [saving, setSaving] = useState(false),
     [saved, setSaved] = useState("");
   const container = useRef<HTMLDivElement>(null),
+    focusFrame = useRef(0),
     dragging = useRef(false),
     busy = useRef(false),
     editor = useRef<HTMLInputElement & HTMLSelectElement>(null);
@@ -61,7 +62,10 @@ export function BidGrid({
       dragging.current = false;
     };
     window.addEventListener("pointerup", stop);
-    return () => window.removeEventListener("pointerup", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      cancelAnimationFrame(focusFrame.current);
+    };
   }, []);
   useEffect(() => {
     if (edit) {
@@ -70,7 +74,8 @@ export function BidGrid({
     }
   }, [edit?.id, edit?.field]); // eslint-disable-line react-hooks/exhaustive-deps
   function focus(point: Point) {
-    requestAnimationFrame(() =>
+    cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() =>
       container.current
         ?.querySelector<HTMLElement>(
           `[data-grid-r="${point.r}"][data-grid-c="${point.c}"]`,
@@ -86,6 +91,8 @@ export function BidGrid({
     focus(point);
   }
   function startEdit(point: Point) {
+    cancelAnimationFrame(focusFrame.current);
+    dragging.current = false;
     const bid = rows[point.r]?.original,
       field = columns[point.c]?.id;
     if (!bid || bid.deleted_at) return;
@@ -193,7 +200,8 @@ export function BidGrid({
             c <= Math.max(selection.anchor.c, selection.end.c);
             c++
           )
-            line.push(value(rows[r].original, columns[c].id));
+            if (rows[r] && columns[c])
+              line.push(value(rows[r].original, columns[c].id));
           values.push(line);
         }
         e.clipboardData.setData("text/plain", toTsv(values));
@@ -309,6 +317,10 @@ export function BidGrid({
                       active || (!selection && r === 0 && c === 0) ? 0 : -1
                     }
                     className={`relative min-w-24 border px-3 py-2 align-middle outline-none ${selected ? "bg-primary/10" : ""} ${active ? "ring-2 ring-inset ring-primary" : ""}`}
+                    onFocus={(e) => {
+                      if (e.target === e.currentTarget && !selection && !edit)
+                        setSelection({ anchor: point, end: point });
+                    }}
                     onPointerDown={(e) => {
                       if (edit) return;
                       dragging.current = true;

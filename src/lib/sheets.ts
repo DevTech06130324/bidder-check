@@ -108,12 +108,12 @@ export function validateImportRows(rows: ImportRow[]): ImportError[] {
     if (!["open", "closed"].includes(r.job_status))
       error("job_status", "Choose open or closed.");
     try {
-      if (r.url.length > 8192) throw new Error();
+      if (r.url.length > 4096) throw new Error();
       const url = normalizeJobUrl(r.url);
       if (seen.has(url)) error("url", `Duplicate of row ${seen.get(url)}.`);
       else seen.set(url, i + 1);
     } catch {
-      error("url", "Enter a valid HTTP/HTTPS URL (maximum 8192 characters).");
+      error("url", "Enter a valid HTTP/HTTPS URL (maximum 4096 characters).");
     }
   });
   return errors;

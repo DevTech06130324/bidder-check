@@ -568,6 +568,13 @@ export function BidWorkspace({
   useEffect(() => {
     table.setPageIndex(0);
   }, [filterKey, table]);
+  useEffect(() => {
+    const max = Math.max(
+      0,
+      Math.ceil(filteredRows.length / table.getState().pagination.pageSize) - 1,
+    );
+    if (table.getState().pagination.pageIndex > max) table.setPageIndex(max);
+  }, [filteredRows.length, table]);
   return (
     <>
       {paste !== null && (
@@ -813,6 +820,10 @@ export function BidWorkspace({
             <BidGrid
               key={JSON.stringify([
                 table.getState().pagination.pageIndex,
+                table
+                  .getRowModel()
+                  .rows.map((row) => row.original.id)
+                  .join(","),
                 dateMode === "today" || dateMode === "yesterday" ? today : "",
                 sorting,
                 search,

@@ -404,7 +404,10 @@ export async function updateBidCell(
       (await rpc("update_bid_cell", {
         p_bid: z.uuid().parse(bid),
         p_field: field,
-        p_value: z.string().max(8192).parse(value),
+        p_value:
+          field === "url"
+            ? normalizeJobUrl(value)
+            : z.string().max(8192).parse(value),
         p_version: z.number().int().nonnegative().parse(version),
       })) as {
         ok?: boolean;
@@ -425,7 +428,7 @@ export async function checkBidImport(
     return (await rpc("validate_bid_import", {
       p_resume: z.uuid().parse(resume),
       p_date: date,
-      p_rows: rows,
+      p_rows: rows.map((row) => ({ ...row, url: normalizeJobUrl(row.url) })),
     })) as import("@/lib/sheets").ImportError[];
   }, false);
 }
@@ -441,7 +444,7 @@ export async function importBids(
     return (await rpc("import_bids", {
       p_resume: z.uuid().parse(resume),
       p_date: date,
-      p_rows: rows,
+      p_rows: rows.map((row) => ({ ...row, url: normalizeJobUrl(row.url) })),
       p_request: z.uuid().parse(request),
     })) as {
       ids?: string[];
