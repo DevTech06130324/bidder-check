@@ -41,4 +41,4 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - Existing clients remain approved; public clients start pending. Account editing, approval/rejection, reset confirmation and Client ? Bidders hierarchy are available in Users.
 - Chicago Today / All / Custom table query is independent of reporting. Expanded columns include signed visible-row previews and inline screenshot upload. Trash is excluded from reporting and keeps evidence/history for restoration.
 - Review identified stale account reservations after email changes. Reproduced in PostgreSQL tests; migration 006 moves the reservation with its Auth account. Browser tests identified a TanStack render loop; memoized filtered rows resolve it.
-- Verification/release evidence will be recorded after hosted staging and production checks.
+- Final local verification: 32 unit/database tests, 16 desktop/mobile browser tests, lint/type checking and production build passed. Hosted staging passed all 13 checkpoints and cleaned its generated data. See docs/deployment.md for release identifiers.

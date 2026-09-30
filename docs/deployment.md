@@ -35,3 +35,11 @@ Verification on 2026-09-29: 20 unit/database cases, 14 desktop/mobile browser ca
 Application commit `ffd5474` reached READY in production (`dpl_4rJ8zXEdvLHPVYx72AkmES2sRcKF`) and staging (`dpl_Bc3FTUdih6hF46PtxXDyMiJUCeVS`). Subsequent documentation/test-runner commits may create equivalent deployments through the GitHub integration.
 
 Post-release production checks passed: protected routes redirect to login, updated signup/recovery pages render on mobile without overflow, Supabase reports immediate signup enabled, and the designated administrator remains active. Production checks were read-only; complete data-mutation journeys ran on staging.
+
+## Approval and bid workflow release ? 2026-09-30
+
+The new application is verified on staging at commit `a247b2d`, deployment `dpl_9vdxHy9Du3yZXQaN56yXekLB8D9Y`. Migrations 004, 005, 006 and 202609300001 add client approval, account/email synchronization, atomic evidence application, recoverable trash and blocked-account settings restrictions. Earlier immediate-workspace onboarding is superseded: public client sessions now land on approval status until approved; SMTP remains unnecessary.
+
+Release validation: 32 unit/database tests, 16 desktop/mobile browser tests, lint/type checking and production build passed. All 13 hosted staging checkpoints passed: pending/signup restrictions; rejection/approval; admin client create/archive/restore; synchronized email and confirmed password resets; bidder creation/login/password change; private resumes; invalid screenshot rejection; automatic application and replacement; direct tenant/storage restrictions; correction/reapplication/rate/idempotency; trash/restoration; parent archival/restoration; individual archival and retained earnings. Synthetic staging accounts/files were cleaned up.
+
+Post-release verification uses `node --env-file=.env.local scripts/production-smoke.mjs`. It checks the designated admin without editing it, creates one synthetic pending client, verifies approval routing and password change, then removes exactly that generated account. No customer records are changed and no email is sent.
