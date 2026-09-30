@@ -178,7 +178,7 @@ try {
     ).error,
   );
   await ap.goto(`${origin}/users`);
-  await ap.getByRole("button", { name: /^Pending/ }).click();
+  await ap.getByRole("button", { name: /^pending/i }).click();
   await ap.getByLabel("Search people").fill(ownerEmail);
   await ap.getByRole("button", { name: "Reject", exact: true }).click();
   await ap
@@ -196,6 +196,48 @@ try {
   await expect(cp).toHaveURL(/\/dashboard/);
   pass(
     "Signup is pending; URL and direct API access blocked; admin rejects with visible reason then approves",
+  );
+  await ap.goto(`${origin}/users`);
+  await ap.getByRole("button", { name: "Add client", exact: true }).click();
+  await ap
+    .getByRole("dialog")
+    .getByLabel("Full name", { exact: true })
+    .fill("Managed Client");
+  const managedEmail = `${prefix}-managed@example.com`;
+  await ap
+    .getByRole("dialog")
+    .getByLabel("Email address", { exact: true })
+    .fill(managedEmail);
+  await ap.getByRole("button", { name: "Create client", exact: true }).click();
+  await expect(ap.getByText("Client created", { exact: true })).toBeVisible();
+  const managed = ok(
+    await admin.from("profiles").select("*").eq("email", managedEmail).single(),
+  );
+  users.push(managed.id);
+  assert.equal(managed.approval_status, "approved");
+  await ap.getByLabel("Search people").fill(managedEmail);
+  await ap.getByRole("button", { name: "Manage", exact: true }).click();
+  await ap.getByLabel("Account status").selectOption("true");
+  await ap.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(ap.getByText("Account updated", { exact: true })).toBeVisible();
+  await ap.getByRole("button", { name: /^archived$/i }).click();
+  await ap.getByRole("button", { name: "Manage", exact: true }).click();
+  await ap.getByLabel("Account status").selectOption("false");
+  await ap.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        ok(
+          await admin
+            .from("profiles")
+            .select("archived")
+            .eq("id", managed.id)
+            .single(),
+        ).archived,
+    )
+    .toBe(false);
+  pass(
+    "Admin creates an automatically approved client and archives/restores it through Users",
   );
   const outsider = await seedClient("other");
   ok(
@@ -579,6 +621,26 @@ try {
   );
   await bp.goto(`${origin}/earnings`);
   await expect(bp.getByText("$2.50", { exact: true }).first()).toBeVisible();
+  ok(
+    await administrator.rpc("update_client", {
+      p_client: owner.id,
+      p_name: "Smoke Client",
+      p_archived: true,
+    }),
+  );
+  assert.deepEqual(ok(await client.from("bids").select("id")), []);
+  assert.deepEqual(ok(await bidder.from("bids").select("id")), []);
+  ok(
+    await administrator.rpc("update_client", {
+      p_client: owner.id,
+      p_name: "Smoke Client",
+      p_archived: false,
+    }),
+  );
+  assert.equal(ok(await bidder.from("bids").select("id")).length, 1);
+  pass(
+    "Client archival blocks both owner and descendant bidder; restoration reinstates access",
+  );
   ok(
     await client.rpc("update_bidder", {
       p_bidder: invited.id,

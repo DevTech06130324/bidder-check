@@ -8,6 +8,9 @@ test("dashboard has real component layout, responsive navigation, and no serious
     page.getByRole("heading", { name: "Welcome back, Alex." }),
   ).toBeVisible();
   await expect(page.getByText("Total earnings", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Today (CT)", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -44,7 +47,13 @@ test("bid table search, filters and details show the correct application", async
     page.getByRole("cell", { name: "Linear", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("1–1 of 1 bids")).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth <=
+        document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
   await page
     .getByRole("button", { name: "View Senior Frontend Engineer at Linear" })
     .click();

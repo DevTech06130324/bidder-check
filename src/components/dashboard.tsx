@@ -17,7 +17,6 @@ import {
   Wallet,
   ArrowUpRight,
   CalendarDays,
-  ArrowRight,
   Users,
   FileText,
   Target,
@@ -25,10 +24,8 @@ import {
 } from "lucide-react";
 import type { WorkspaceData } from "@/lib/data";
 import { summarizeEarnings, usd } from "@/lib/domain";
-import { Button } from "./ui/button";
-import { Badge } from "./ui/badge";
-import { PageHeading, AppliedBadge, EmptyState } from "./common";
-import { BidDialog } from "./bids";
+import { PageHeading } from "./common";
+import { BidDialog, BidWorkspace } from "./bids";
 export function Dashboard({ data }: { data: WorkspaceData }) {
   const [days, setDays] = useState(30);
   const timezone = data.workspaces[0]?.timezone ?? "America/Chicago";
@@ -290,91 +287,10 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
           </div>
         </section>
       </div>
-      <section className="panel mb-7 overflow-hidden">
-        <div className="flex items-center justify-between border-b p-5">
-          <div>
-            <h2 className="font-semibold">Recent opportunities</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              The latest additions to your workspace
-            </p>
-          </div>
-          <Button asChild size="sm" variant="ghost" className="text-primary">
-            <Link href="/bids">
-              View all <ArrowRight size={14} />
-            </Link>
-          </Button>
-        </div>
-        {!data.bids.length ? (
-          <EmptyState
-            title="A fresh start, full of possibility"
-            description="Add your first opportunity and watch your progress take shape."
-          />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead className="bg-background/70 text-[10px] uppercase tracking-wider text-muted-foreground">
-                <tr>
-                  {[
-                    "Opportunity",
-                    "Resume",
-                    "Work type",
-                    "Status",
-                    "Found",
-                  ].map((h) => (
-                    <th className="px-5 py-3 font-semibold" key={h}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {[...data.bids]
-                  .sort((a, b) => b.created_at.localeCompare(a.created_at))
-                  .slice(0, 5)
-                  .map((b) => (
-                    <tr key={b.id}>
-                      <td className="px-5 py-4">
-                        <Link href="/bids" className="flex items-center gap-3">
-                          <span className="flex size-9 items-center justify-center rounded-lg border bg-background font-semibold text-muted-foreground">
-                            {b.company[0]}
-                          </span>
-                          <span>
-                            <span className="block text-xs font-semibold">
-                              {b.role_name}
-                            </span>
-                            <span className="mt-1 block text-[11px] text-muted-foreground">
-                              {b.company}
-                            </span>
-                          </span>
-                        </Link>
-                      </td>
-                      <td className="px-5 py-4">
-                        <Badge
-                          variant="outline"
-                          className="font-mono text-[10px]"
-                        >
-                          {
-                            data.resumes.find((r) => r.id === b.resume_id)
-                              ?.identifier
-                          }
-                        </Badge>
-                      </td>
-                      <td className="px-5 py-4 text-xs capitalize text-muted-foreground">
-                        {b.arrangement}
-                      </td>
-                      <td className="px-5 py-4">
-                        <AppliedBadge applied={b.applied} />
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-4 text-xs text-muted-foreground">
-                        {formatInTimeZone(b.found_at, timezone, "MMM d, yyyy")}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <div className="mb-7">
+        <h2 className="mb-4 font-semibold">Daily bid activity</h2>
+        <BidWorkspace data={data} embedded />
+      </div>
       <div className="grid gap-5 md:grid-cols-3">
         {[
           {

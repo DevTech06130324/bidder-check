@@ -687,12 +687,43 @@ it("admin cannot use bidder editing to mutate a client or nonexistent account", 
     db.query("select public.update_bidder($1,'Wrong target',0,true)", [client]),
   ).rejects.toThrow("Bidder not found");
 });
-it("an old bidder email can be reused with a fresh identity after an email change",async()=>{
+it("an old bidder email can be reused with a fresh identity after an email change", async () => {
   await asUser(other);
-  const w=(await db.query<{id:string}>('select id from public.workspaces')).rows[0].id;
-  const reservation=(await db.query<{id:string}>("select public.invite_bidder($1,'bidder@test.com','Replacement',100) id",[w])).rows[0].id;
+  const w = (await db.query<{ id: string }>("select id from public.workspaces"))
+    .rows[0].id;
+  const reservation = (
+    await db.query<{ id: string }>(
+      "select public.invite_bidder($1,'bidder@test.com','Replacement',100) id",
+      [w],
+    )
+  ).rows[0].id;
   expect(reservation).not.toBe(bidder);
-  await db.exec('reset role');
-  await db.query("insert into auth.users(id,email,email_confirmed_at) values($1,'bidder@test.com',now())",[reservation]);
-  expect((await db.query<{email:string}>('select email from public.profiles where id=$1',[bidder])).rows[0].email).toBe('changed@test.com');
+  await db.exec("reset role");
+  await db.query(
+    "insert into auth.users(id,email,email_confirmed_at) values($1,'bidder@test.com',now())",
+    [reservation],
+  );
+  expect(
+    (
+      await db.query<{ email: string }>(
+        "select email from public.profiles where id=$1",
+        [bidder],
+      )
+    ).rows[0].email,
+  ).toBe("changed@test.com");
+});
+
+it("pending clients cannot mutate settings through direct RPC", async () => {
+  await db.exec("reset role");
+  const pending = "00000000-0000-4000-8000-000000000031";
+  await db.query(
+    "insert into auth.users(id,email) values($1,'settings-pending@test.com')",
+    [pending],
+  );
+  await asUser(pending);
+  await expect(
+    db.query(
+      "select public.save_settings('New name',null,'','America/Chicago')",
+    ),
+  ).rejects.toThrow("Access denied");
 });

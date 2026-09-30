@@ -318,9 +318,13 @@ export function BidWorkspace({
       search,
     ],
   );
-  const filteredRows = useMemo(() => rows.filter(
-    (b) => status === "all" || b.applied === (status === "applied"),
-  ), [rows,status]);
+  const filteredRows = useMemo(
+    () =>
+      rows.filter(
+        (b) => status === "all" || b.applied === (status === "applied"),
+      ),
+    [rows, status],
+  );
   function openBid(b: Bid) {
     setSelected(b.id);
     setReason("");
