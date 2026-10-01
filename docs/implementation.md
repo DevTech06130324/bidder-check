@@ -51,3 +51,13 @@ Authority: the user-approved implementation plan in this conversation, 2026-09-2
 - Hosted behavior and maximum-size behavior remained release checks, not feature exclusions. The 500-row UI/database checks and full hosted workflow passed. Existing axe/mobile checks passed; these are not an unrestricted production load benchmark.
 - Fixed all four important review findings: URL canonicalization, keyboard focus initialization, selection reconciliation and copy bounds after row removal, and page clamping. Also fixed queued focus closing double-click editors. No deferred minor findings remain.
 - Final local results: 44 unit/database tests, 34 desktop/mobile browser checks, lint/type checking and production build passed. Hosted staging passed all 14 checkpoints and removed its synthetic data.
+
+
+## Bulk actions and cleaner table controls - 2026-09-30
+
+- Added adjacent heading actions, independent cross-page checkbox selection, expected-version atomic bulk trash/restore, and manager-only permanent deletion with typed DELETE confirmation against an expiring actor-bound snapshot.
+- Screenshot metadata/history removal and durable cleanup tasks commit together. Physical objects are removed with the Storage API, followed by delayed verification. Pending tasks and authorized retries survive reloads; import receipt fingerprints prevent deleted bids returning through old requests.
+- Removed text defaults and header handling from Sheets import. All rows are data. Background refresh retains the table and reserves spinner space; retryable failures retain prior results. Screenshot controls remain mounted during table updates.
+- Fresh whole-branch review found older unfinished cleanup disappeared after ten newer operations. Reproduced RED in the database regression, fixed to retain every pending operation, and verified GREEN. No deferred minor findings.
+- Verification: 51 unit/database tests, 40 desktop/mobile browser checks, lint, type checking and production build pass. Staging deployment `dpl_8zJb28uuw7JzzWcZCEu4NYEfWZNs` at commit `9b5b27c` passed all 16 hosted checkpoints, including synthetic permanent deletion and delayed in-flight upload removal. Synthetic records/files were cleaned up.
+- Execution decisions: used the existing clean checkout on a feature branch and the already-authorized staging/production release path; no separate worktree was needed. Five-minute verification exceeds current upload timeout and signed URL lifetime, with daily/manual retry for pending work; an upload outliving that window would need another verification. Hosted behavior was gated on the completed staging journey, not inferred from local tests.
