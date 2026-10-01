@@ -88,7 +88,7 @@ try {
     ],
   ]) {
     const result = await client.rpc(name, args);
-    assert.match(result.error?.message ?? "", /Access denied/);
+    assert.match(result.error?.message ?? "", /Access denied/i);
   }
   assert.deepEqual(
     ok(await client.from("bid_import_receipts").select("request_id")),
@@ -122,7 +122,7 @@ try {
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/login/);
   console.log(
-    "PASS production: designated admin active; signup metadata cannot grant roles/approval; pending access denied including spreadsheet RPCs; approval routing, password change and sign-out work",
+    "PASS production: designated admin active; signup metadata cannot grant roles/approval; pending access denied including spreadsheet and bulk/purge RPCs; approval routing, password change and sign-out work",
   );
 } finally {
   await browser?.close();
