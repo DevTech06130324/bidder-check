@@ -68,3 +68,17 @@ Hosted smoke tests create their own staging accounts and purge only those synthe
 Verified staging release: commit `9b5b27c`, deployment `dpl_8zJb28uuw7JzzWcZCEu4NYEfWZNs`. All 16 hosted checkpoints passed and generated accounts/files were removed. Local verification: 51 unit/database cases, 40 browser cases, lint/type checking and production build. A fresh review's pending-cleanup discovery issue was fixed with a failing-then-passing regression before staging.
 
 Production release `161d372` reached READY as `dpl_6ABnUrWGAcXWpN8vYfY5XCv97spK` at https://bidder-check.vercel.app. Migration 202609300004 is applied in both environments. Post-release checks passed: designated admin remains active, signup metadata cannot grant privileges, pending accounts are denied all new bulk/purge RPCs, approval routing/password change/sign-out work, and unauthenticated cron requests return 401. The synthetic production verification account was removed; no existing customer records were purged. A smoke-test assertion was corrected to match denial messages case-insensitively before the successful rerun.
+
+## Automatic screenshot cleanup scheduling
+
+Migration `202609300005_cleanup_status.sql` is additive: `bid_purge_status` gains `serverTime`, `nextAttemptAt`, `processingFiles` and `awaitingRemovalFiles` (existing keys keep their meaning, except `failedFiles` now excludes tasks a worker currently holds), `retry_bid_cleanup` skips live leases, and `has_due_storage_cleanup()` lets the scheduler skip idle minutes. Deploy the app and migration together; older clients ignore the new keys.
+
+The app polls status read-only. Cleanup itself no longer depends on an open browser: a Supabase Cron job runs every minute and calls the authenticated `/api/cron/storage-cleanup` endpoint through `pg_net` only when due, unleased tasks exist. The endpoint drains up to 20 batches of 50 files (or 40 seconds) per call. Leases (two minutes) make overlapping calls safe. The five-minute verification delay is unchanged, so a removed screenshot completes within about a minute after it becomes eligible. The daily Vercel cron stays as a backup.
+
+Per environment (staging first), as the project owner, outside `supabase db push`:
+
+1. Create the Vault secrets listed in `supabase/scheduler/storage-cleanup-schedule.sql`: the environment's endpoint URL, its `CRON_SECRET`, and on staging the deployment-protection bypass.
+2. Run `supabase/scheduler/storage-cleanup-function.sql`, then `supabase/scheduler/storage-cleanup-schedule.sql`. Both are idempotent.
+3. Monitor with the queries at the end of the schedule file (`cron.job_run_details`, `net._http_response`). Worker logs contain counts only, never file paths.
+
+Staging acceptance (do not advance timestamps or call the worker by hand): purge a synthetic application that has a screenshot, close the browser, and confirm the task completes about five to six minutes later. Repeat with a screenshot uploaded after the initial removal, and with more than 50 synthetic files. Confirm an unauthenticated request to the endpoint returns 401. For production, deploy the same way and confirm the existing pending operation completes through its queued task; do not create another purge or mark work complete by hand.

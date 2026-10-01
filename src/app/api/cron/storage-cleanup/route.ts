@@ -13,9 +13,14 @@ export async function GET(request: Request) {
   )
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    return Response.json(await runStorageCleanup(), {
-      headers: { "Cache-Control": "no-store" },
-    });
+    // Drain backlogs inside the function limit; leases make overlapping calls safe.
+    return Response.json(
+      await runStorageCleanup(undefined, {
+        maxBatches: 20,
+        deadlineMs: 40_000,
+      }),
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch {
     return Response.json(
       { error: "Cleanup pending; retry scheduled" },

@@ -1219,3 +1219,218 @@ it("keeps older unfinished cleanup discoverable after newer completed purges", a
   ).rows[0].r;
   expect(status.map((o) => o.id)).toContain(old);
 });
+
+const taskOperation = async (count = 1, completed = true) =>
+  (
+    await db.query<{ id: string }>(
+      `insert into public.bid_purge_operations(actor_id,scope,targets,count,completed_at) values($1,'Selected trashed bids','[]',$2,${completed ? "now()" : "null"}) returning id`,
+      [client, count],
+    )
+  ).rows[0].id;
+
+it("reports phase counts, server time and the next eligible attempt", async () => {
+  await db.exec("reset role");
+  const op = await taskOperation(3);
+  await db.query(
+    `insert into public.storage_cleanup_tasks(operation_id,storage_path,first_removed_at,next_attempt_at) values
+     ($1,'s/verify-waiting',now(),now()+interval '4 minutes'),
+     ($1,'s/removing',null,now()),
+     ($1,'s/leased',now(),now()-interval '1 minute')`,
+    [op],
+  );
+  await db.query(
+    "update public.storage_cleanup_tasks set lease_id=gen_random_uuid(),lease_until=now()+interval '2 minutes' where storage_path='s/leased'",
+  );
+  await asUser(client);
+  const s = (
+    await db.query<{ r: Record<string, number | string | null> }>(
+      "select public.bid_purge_status($1) r",
+      [op],
+    )
+  ).rows[0].r;
+  expect(s).toMatchObject({
+    pendingFiles: 3,
+    awaitingRemovalFiles: 1,
+    verifyingFiles: 2,
+    processingFiles: 1,
+    failedFiles: 0,
+    deletedCount: 3,
+  });
+  expect(Date.parse(String(s.serverTime))).not.toBeNaN();
+  // The leased task is excluded, so the earliest idle attempt is the immediate removal.
+  expect(Date.parse(String(s.nextAttemptAt))).toBeLessThanOrEqual(
+    Date.parse(String(s.serverTime)),
+  );
+  await db.exec("reset role");
+  await db.query(
+    "update public.storage_cleanup_tasks set completed_at=now() where operation_id=$1 and storage_path<>'s/verify-waiting'",
+    [op],
+  );
+  await asUser(client);
+  const waiting = (
+    await db.query<{ r: { nextAttemptAt: string; serverTime: string } }>(
+      "select public.bid_purge_status($1) r",
+      [op],
+    )
+  ).rows[0].r;
+  expect(Date.parse(waiting.nextAttemptAt)).toBeGreaterThan(
+    Date.parse(waiting.serverTime) + 3 * 60_000,
+  );
+});
+
+it("retry never shortens an in-flight verification delay or a live lease", async () => {
+  await db.exec("reset role");
+  const op = await taskOperation(2);
+  await db.query(
+    `insert into public.storage_cleanup_tasks(operation_id,storage_path,first_removed_at,next_attempt_at,last_error,lease_id,lease_until) values
+     ($1,'s/leased-failed',now(),now()+interval '1 minute','retry pending',gen_random_uuid(),now()+interval '2 minutes'),
+     ($1,'s/failed',null,now()+interval '1 minute','retry pending',null,null),
+     ($1,'s/verify-waiting',now(),now()+interval '4 minutes',null,null,null)`,
+    [op],
+  );
+  await asUser(client);
+  const r = (
+    await db.query<{ r: { failedFiles: number; processingFiles: number } }>(
+      "select public.retry_bid_cleanup($1) r",
+      [op],
+    )
+  ).rows[0].r;
+  expect(r).toMatchObject({ failedFiles: 1, processingFiles: 1 });
+  await db.exec("reset role");
+  const due = Object.fromEntries(
+    (
+      await db.query<{ storage_path: string; due: boolean }>(
+        "select storage_path,next_attempt_at<=clock_timestamp() due from public.storage_cleanup_tasks where operation_id=$1",
+        [op],
+      )
+    ).rows.map((x) => [x.storage_path, x.due]),
+  );
+  expect(due).toEqual({
+    "s/failed": true,
+    "s/leased-failed": false,
+    "s/verify-waiting": false,
+  });
+});
+
+it("scheduler probe is true only for due, unleased work and is service-only", async () => {
+  await db.exec("reset role");
+  await db.exec("delete from public.storage_cleanup_tasks");
+  const probe = async () =>
+    (
+      await db.query<{ r: boolean }>(
+        "select public.has_due_storage_cleanup() r",
+      )
+    ).rows[0].r;
+  expect(await probe()).toBe(false);
+  const op = await taskOperation();
+  const task = (
+    await db.query<{ id: string }>(
+      "insert into public.storage_cleanup_tasks(operation_id,storage_path,first_removed_at,next_attempt_at) values($1,'s/x',now(),now()+interval '5 minutes') returning id",
+      [op],
+    )
+  ).rows[0].id;
+  expect(await probe()).toBe(false);
+  await db.query(
+    "update public.storage_cleanup_tasks set next_attempt_at=now()-interval '1 second' where id=$1",
+    [task],
+  );
+  expect(await probe()).toBe(true);
+  await db.query(
+    "update public.storage_cleanup_tasks set lease_id=gen_random_uuid(),lease_until=now()+interval '2 minutes' where id=$1",
+    [task],
+  );
+  expect(await probe()).toBe(false);
+  await db.query(
+    "update public.storage_cleanup_tasks set lease_until=now()-interval '1 second' where id=$1",
+    [task],
+  );
+  expect(await probe()).toBe(true);
+  await asUser(client);
+  await expect(
+    db.query("select public.has_due_storage_cleanup()"),
+  ).rejects.toThrow(/permission/i);
+});
+
+it("scheduler function calls the endpoint only when work is due, with auth headers", async () => {
+  await db.exec("reset role");
+  await db.exec(`create schema if not exists net; create schema if not exists vault;
+   create table if not exists public.http_calls(url text, headers jsonb, timeout integer);
+   create or replace function net.http_get(url text, headers jsonb, timeout_milliseconds integer) returns bigint language sql as $$ insert into public.http_calls values(url,headers,timeout_milliseconds) returning 1::bigint $$;
+   create table if not exists vault.decrypted_secrets(name text, decrypted_secret text);
+   delete from vault.decrypted_secrets; delete from public.http_calls; delete from public.storage_cleanup_tasks;`);
+  await db.exec(
+    readFileSync("supabase/scheduler/storage-cleanup-function.sql", "utf8"),
+  );
+  const invoke = () => db.query("select public.invoke_storage_cleanup()");
+  await invoke();
+  expect((await db.query("select * from public.http_calls")).rows).toHaveLength(
+    0,
+  );
+  const op = await taskOperation();
+  await db.query(
+    "insert into public.storage_cleanup_tasks(operation_id,storage_path) values($1,'s/y')",
+    [op],
+  );
+  await expect(invoke()).rejects.toThrow(/not configured/i);
+  await db.exec(`insert into vault.decrypted_secrets values
+   ('storage_cleanup_url','https://example.test/api/cron/storage-cleanup'),('storage_cleanup_secret','s3cret'),('storage_cleanup_bypass','bypass')`);
+  await invoke();
+  const calls = (
+    await db.query<{
+      url: string;
+      headers: Record<string, string>;
+      timeout: number;
+    }>("select * from public.http_calls")
+  ).rows;
+  expect(calls).toHaveLength(1);
+  expect(calls[0].headers).toEqual({
+    authorization: "Bearer s3cret",
+    "x-vercel-protection-bypass": "bypass",
+  });
+  expect(calls[0].timeout).toBe(55000);
+  await asUser(client);
+  await expect(
+    db.query("select public.invoke_storage_cleanup()"),
+  ).rejects.toThrow(/permission/i);
+});
+
+it("lets a second worker reclaim a task only after the first worker's lease expires", async () => {
+  await db.exec("reset role");
+  await db.exec("delete from public.storage_cleanup_tasks");
+  const op = await taskOperation();
+  await db.query(
+    "insert into public.storage_cleanup_tasks(operation_id,storage_path) values($1,'s/z')",
+    [op],
+  );
+  await db.exec("set role service_role");
+  const claim = async () =>
+    (
+      await db.query<{ id: string; lease_id: string }>(
+        "select * from public.claim_storage_cleanup(null,50)",
+      )
+    ).rows;
+  const first = (await claim())[0];
+  expect(await claim()).toHaveLength(0);
+  await db.exec("reset role");
+  await db.query(
+    "update public.storage_cleanup_tasks set lease_until=now()-interval '1 second' where id=$1",
+    [first.id],
+  );
+  await db.exec("set role service_role");
+  const second = (await claim())[0];
+  expect(second.lease_id).not.toBe(first.lease_id);
+  // The stale worker can no longer record a result for the reclaimed task.
+  await db.query("select public.finish_storage_cleanup($1,$2,true)", [
+    first.id,
+    first.lease_id,
+  ]);
+  await db.exec("reset role");
+  expect(
+    (
+      await db.query<{ first_removed_at: string | null }>(
+        "select first_removed_at from public.storage_cleanup_tasks where id=$1",
+        [first.id],
+      )
+    ).rows[0].first_removed_at,
+  ).toBeNull();
+});

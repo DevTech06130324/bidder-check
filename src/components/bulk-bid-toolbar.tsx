@@ -1,14 +1,19 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
-import type { BidTarget, PurgeSnapshot, PurgeStatus } from "@/lib/bulk-types";
+import type {
+  BidTarget,
+  CleanupOutcome,
+  PurgeSnapshot,
+} from "@/lib/bulk-types";
+import { canRetryPurge, plural, purgeMessage } from "@/lib/purge-status";
+import { usePurgeOperations } from "./use-purge-operations";
 import {
   bulkBidState,
   prepareBidPurge,
   confirmBidPurge,
-  getPurgeStatus,
-  recentBidPurges,
+  retryPurgeCleanup,
 } from "@/app/(workspace)/actions";
 import { Button } from "./ui/button";
 import { Field } from "./common";
@@ -19,6 +24,16 @@ import {
   DialogTitle,
   DialogDescription,
 } from "./ui/dialog";
+
+function retryToast(outcome: CleanupOutcome, pending: number) {
+  if (outcome === "failed") toast.error("Cleanup failed — retry available");
+  else if (outcome === "waiting")
+    toast.info("Final verification is scheduled; nothing to retry yet");
+  else if (outcome === "processing")
+    toast.info("Cleanup is already in progress");
+  else if (!pending) toast.success("Screenshot cleanup complete");
+  else toast.success("Screenshots removed; final verification scheduled");
+}
 
 export function BulkBidToolbar({
   targets,
@@ -44,28 +59,9 @@ export function BulkBidToolbar({
   const [busy, setBusy] = useState(false),
     [snapshot, setSnapshot] = useState<PurgeSnapshot | null>(null),
     [confirmation, setConfirmation] = useState("");
-  const [error, setError] = useState(""),
-    [operations, setOperations] = useState<PurgeStatus[]>([]);
-  function remember(status: PurgeStatus) {
-    setOperations((current) => [
-      status,
-      ...current.filter((o) => o.id !== status.id),
-    ]);
-  }
-  useEffect(() => {
-    if (!manager) return;
-    let cancelled = false;
-    async function load() {
-      const result = await recentBidPurges();
-      if (!cancelled && result.data) setOperations(result.data);
-    }
-    void load();
-    const timer = setInterval(() => void load(), 30000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [manager]);
+  const [error, setError] = useState("");
+  const { operations, finished, pollError, serverNow, begin, remember } =
+    usePurgeOperations(manager);
   async function run(action: () => Promise<void>) {
     setBusy(true);
     onBusy(true);
@@ -158,42 +154,48 @@ export function BulkBidToolbar({
           </>
         )}
       </div>
-      {operations
-        .filter((o) => o.pendingFiles > 0)
-        .map((op) => (
-          <div
-            key={op.id}
-            className="flex flex-wrap items-center gap-2 border-b px-5 py-2 text-xs"
-            role="status"
+      {pollError && (
+        <p role="alert" className="border-b px-5 py-2 text-xs text-destructive">
+          Screenshot cleanup status could not be refreshed. Retrying…
+        </p>
+      )}
+      {operations.map((op) => (
+        <div
+          key={op.id}
+          className="flex flex-wrap items-center gap-2 border-b px-5 py-2 text-xs"
+          role="status"
+        >
+          <span>
+            {plural(op.deletedCount, "application")} deleted.{" "}
+            {purgeMessage(op, serverNow)}.
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy || disabled || !canRetryPurge(op, serverNow)}
+            onClick={() =>
+              void run(async () => {
+                const token = begin();
+                const result = await retryPurgeCleanup(op.id);
+                if (result.error || !result.data) throw new Error(result.error);
+                remember(result.data.status, token);
+                retryToast(
+                  result.data.outcome,
+                  result.data.status.pendingFiles,
+                );
+              })
+            }
           >
-            <span>
-              {op.deletedCount} applications deleted.{" "}
-              {op.failedFiles
-                ? "Screenshot cleanup needs retry."
-                : op.verifyingFiles === op.pendingFiles
-                  ? "Screenshot verification pending."
-                  : "Screenshot cleanup pending."}{" "}
-              {op.pendingFiles} files remaining.
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy || disabled}
-              onClick={() =>
-                void run(async () => {
-                  const result = await getPurgeStatus(op.id, true);
-                  if (result.error || !result.data)
-                    throw new Error(result.error);
-                  remember(result.data);
-                  if (!result.data.pendingFiles)
-                    toast.success("Screenshot cleanup complete");
-                })
-              }
-            >
-              Retry cleanup
-            </Button>
-          </div>
-        ))}
+            Retry cleanup
+          </Button>
+        </div>
+      ))}
+      {finished.map((op) => (
+        <p key={op.id} role="status" className="border-b px-5 py-2 text-xs">
+          {plural(op.deletedCount, "application")} deleted.{" "}
+          {purgeMessage(op, serverNow)}.
+        </p>
+      ))}
       <Dialog
         open={!!snapshot}
         onOpenChange={(open) => {
@@ -238,15 +240,22 @@ export function BulkBidToolbar({
               onClick={() =>
                 void run(async () => {
                   if (!snapshot) return;
+                  const token = begin();
                   const result = await confirmBidPurge(
                     snapshot.id,
                     confirmation,
                   );
                   if (result.error || !result.data)
                     throw new Error(result.error);
-                  remember(result.data);
-                  toast.success(
-                    `${result.data.deletedCount} applications permanently deleted${result.data.pendingFiles ? "; screenshot cleanup pending" : "; screenshot cleanup complete"}`,
+                  remember(result.data.status, token);
+                  const { status, outcome } = result.data;
+                  const note = !status.pendingFiles
+                    ? "screenshot cleanup complete"
+                    : outcome === "failed"
+                      ? "screenshot cleanup failed and will retry automatically"
+                      : "screenshot cleanup in progress";
+                  (outcome === "failed" ? toast.warning : toast.success)(
+                    `${plural(status.deletedCount, "application")} permanently deleted; ${note}`,
                   );
                   setSnapshot(null);
                   onDone();

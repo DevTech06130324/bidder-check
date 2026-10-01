@@ -72,3 +72,23 @@ test("failed background refresh keeps the grid and its toolbar position", async 
   ).toHaveCount(0);
   expect(before?.height).toBe((await cell.boundingBox())?.height);
 });
+
+test("cleanup notice counts down, enables retry only when due and then shows completion", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids?purge-notice");
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: "15 applications deleted" });
+  const retry = notice.getByRole("button", { name: "Retry cleanup" });
+  await expect(notice).toContainText(
+    "Screenshots removed — final verification scheduled in",
+  );
+  await expect(notice).not.toContainText(/remaining/i);
+  await expect(retry).toBeDisabled();
+  await expect(notice).toContainText("Verifying cleanup (1 file)");
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  await expect(notice).toContainText("Cleanup complete");
+  await expect(notice).toHaveCount(0, { timeout: 15000 });
+});

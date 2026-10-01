@@ -13,7 +13,14 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { validateScreenshotBytes } from "@/lib/image-validation";
 import { runStorageCleanup } from "@/lib/storage-cleanup";
-import type { BidTarget, PurgeSnapshot, PurgeStatus } from "@/lib/bulk-types";
+import type {
+  BidTarget,
+  CleanupOutcome,
+  PurgeResult,
+  PurgeSnapshot,
+  PurgeStatus,
+} from "@/lib/bulk-types";
+import { canRetryPurge } from "@/lib/purge-status";
 
 type Result<T = undefined> = { data?: T; error?: string };
 async function perform<T>(
@@ -486,24 +493,45 @@ export async function prepareBidPurge(
     false,
   );
 }
+const purgeStatus = async (op: string) =>
+  (await rpc("bid_purge_status", { p_operation: op })) as PurgeStatus;
+/** Run one cleanup pass for an operation; worker errors become an outcome, never a thrown error. */
+async function cleanupPass(op: string): Promise<CleanupOutcome> {
+  try {
+    const result = await runStorageCleanup(op);
+    if (!result.attempted) return "processing";
+    return result.failed ? "failed" : "processed";
+  } catch {
+    return "failed";
+  }
+}
 export async function confirmBidPurge(operation: string, confirmation: string) {
-  return perform(async () => {
+  return perform(async (): Promise<PurgeResult> => {
     if (confirmation !== "DELETE") throw new Error("Type DELETE to confirm.");
     const op = z.uuid().parse(operation);
     await rpc("confirm_bid_purge", { p_operation: op });
     // Application deletion succeeded even if Storage is temporarily unavailable.
-    await runStorageCleanup(op).catch(() => undefined);
-    return (await rpc("bid_purge_status", { p_operation: op })) as PurgeStatus;
+    const outcome = await cleanupPass(op);
+    return { status: await purgeStatus(op), outcome };
   });
 }
-export async function getPurgeStatus(operation: string, retry = false) {
-  return perform(async () => {
+export async function getPurgeStatus(operation: string) {
+  return perform(async () => purgeStatus(z.uuid().parse(operation)), false);
+}
+export async function retryPurgeCleanup(operation: string) {
+  return perform(async (): Promise<PurgeResult> => {
     const op = z.uuid().parse(operation);
-    await rpc(retry ? "retry_bid_cleanup" : "bid_purge_status", {
+    const before = (await rpc("retry_bid_cleanup", {
       p_operation: op,
-    });
-    if (retry) await runStorageCleanup(op).catch(() => undefined);
-    return (await rpc("bid_purge_status", { p_operation: op })) as PurgeStatus;
+    })) as PurgeStatus;
+    const now = Date.parse(before.serverTime);
+    let outcome: CleanupOutcome;
+    if (!before.pendingFiles) outcome = "processed";
+    else if (before.processingFiles >= before.pendingFiles)
+      outcome = "processing";
+    else if (!canRetryPurge(before, now)) outcome = "waiting";
+    else outcome = await cleanupPass(op);
+    return { status: await purgeStatus(op), outcome };
   }, false);
 }
 export async function recentBidPurges() {

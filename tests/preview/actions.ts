@@ -121,4 +121,30 @@ export async function prepareBidPurge(
 }
 export const confirmBidPurge = unavailable,
   getPurgeStatus = unavailable;
-export const recentBidPurges = async () => ({ data: [] });
+// `?purge-notice` simulates a removed screenshot whose verification becomes due in 4 seconds.
+const loadedAt = Date.now();
+let verified = false;
+const purgeFixture = () => ({
+  id: "fixture-operation",
+  scope: "Selected trashed bids",
+  deletedCount: 15,
+  pendingFiles: verified ? 0 : 1,
+  awaitingRemovalFiles: 0,
+  verifyingFiles: verified ? 0 : 1,
+  processingFiles: 0,
+  failedFiles: 0,
+  nextAttemptAt: verified ? null : new Date(loadedAt + 4000).toISOString(),
+  serverTime: new Date().toISOString(),
+});
+export const recentBidPurges = async () => ({
+  data:
+    !verified && new URLSearchParams(window.location.search).has("purge-notice")
+      ? [purgeFixture()]
+      : [],
+});
+export async function retryPurgeCleanup() {
+  if (Date.now() < loadedAt + 4000)
+    return { data: { status: purgeFixture(), outcome: "waiting" } };
+  verified = true;
+  return { data: { status: purgeFixture(), outcome: "processed" } };
+}
