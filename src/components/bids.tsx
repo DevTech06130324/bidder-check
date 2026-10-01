@@ -63,6 +63,7 @@ import {
 } from "./common";
 import { ScreenshotCell } from "./screenshot-cell";
 import { FileUpload } from "./file-upload";
+import { BulkBidToolbar } from "./bulk-bid-toolbar";
 import { BidGrid } from "./bid-grid";
 import { SheetsImport, type ImportResult } from "./sheets-import";
 type Bid = Row<"bids">;
@@ -217,6 +218,9 @@ export function BidWorkspace({
   embedded?: boolean;
   bidderId?: string;
 }) {
+  const [checked, setChecked] = useState<Record<string, number>>({});
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [paste, setPaste] = useState<string | null>(null);
   const editing = useRef(false);
@@ -306,7 +310,16 @@ export function BidWorkspace({
         return;
       }
       setLoading(true);
-      const result = await getBidRows(dateMode, from, to, trash, bidderId);
+      const result = await getBidRows(
+        dateMode,
+        from,
+        to,
+        trash,
+        bidderId,
+      ).catch(() => ({
+        error: "Could not refresh bids. Your previous results are still shown.",
+        data: undefined,
+      }));
       if (cancelled) return;
       if (editing.current) {
         deferredRefresh.current = true;
@@ -316,10 +329,15 @@ export function BidWorkspace({
       setLoading(false);
       if (result.error) {
         setLoadError(result.error);
-        setList([]);
       } else {
         setLoadError("");
         setList(result.data ?? []);
+        const eligible = new Set((result.data ?? []).map((row) => row.id));
+        setChecked((current) =>
+          Object.fromEntries(
+            Object.entries(current).filter(([id]) => eligible.has(id)),
+          ),
+        );
       }
     };
     void run();
@@ -511,7 +529,16 @@ export function BidWorkspace({
     {
       id: "screenshot",
       header: "Screenshot",
-      cell: ({ row }) => <ScreenshotCell bid={row.original} />,
+      cell: ({ row }) => (
+        <ScreenshotCell
+          bid={row.original}
+          disabled={isEditing || pending}
+          onBusy={(value) => {
+            setUploadBusy(value);
+            editingChanged(value);
+          }}
+        />
+      ),
     },
     {
       id: "actions",
@@ -521,7 +548,7 @@ export function BidWorkspace({
           <Button
             variant="outline"
             size="sm"
-            disabled={pending}
+            disabled={pending || isEditing}
             onClick={() => start(() => toggleTrash(row.original))}
           >
             {row.original.deleted_at ? "Restore" : "Move to trash"}
@@ -564,8 +591,11 @@ export function BidWorkspace({
     from,
     to,
     trash,
+    sorting,
+    dateMode === "today" || dateMode === "yesterday" ? today : "",
   ]);
   useEffect(() => {
+    setChecked({});
     table.setPageIndex(0);
   }, [filterKey, table]);
   useEffect(() => {
@@ -686,14 +716,6 @@ export function BidWorkspace({
               </Button>
             </p>
           )}
-          {loading && (
-            <p
-              role="status"
-              className="px-5 pt-2 text-xs text-muted-foreground"
-            >
-              Refreshing bids...
-            </p>
-          )}
           <div className="flex gap-3 p-5">
             <div className="relative flex-1">
               <Search
@@ -802,6 +824,28 @@ export function BidWorkspace({
             </div>
           )}
         </fieldset>
+        <BulkBidToolbar
+          targets={Object.entries(checked).map(([id, version]) => ({
+            id,
+            version,
+          }))}
+          trash={trash}
+          manager={data.profile.role !== "bidder"}
+          bidderId={bidderId}
+          disabled={isEditing || pending}
+          loading={loading}
+          clear={() => setChecked({})}
+          onBusy={(value) => {
+            setBulkBusy(value);
+            editingChanged(value);
+          }}
+          onDone={() => {
+            setChecked({});
+            setSelected(undefined);
+            setRevision((n) => n + 1);
+            router.refresh();
+          }}
+        />
         {!filteredRows.length ? (
           <EmptyState
             title={
@@ -838,6 +882,22 @@ export function BidWorkspace({
                 to,
                 trash,
               ])}
+              checked={checked}
+              disabled={pending || bulkBusy || uploadBusy}
+              onCheck={(rows, value) =>
+                setChecked((current) => {
+                  const next = { ...current };
+                  rows.forEach((row) => {
+                    if (value) next[row.id] = row.version;
+                    else delete next[row.id];
+                  });
+                  if (Object.keys(next).length > 500) {
+                    toast.error("Select at most 500 bids per operation");
+                    return current;
+                  }
+                  return next;
+                })
+              }
               table={table}
               data={data}
               onRow={(row) =>

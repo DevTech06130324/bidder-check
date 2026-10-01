@@ -1,7 +1,7 @@
 // Run only against the dedicated staging project. No email is sent by this test.
 // node --env-file=.env.staging scripts/hosted-smoke.mjs
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createClient } from "@supabase/supabase-js";
 import { chromium, expect as baseExpect } from "@playwright/test";
@@ -765,6 +765,182 @@ try {
   pass(
     "Sheets UI imports historical rows, inline edit persists, concurrent edits conflict, import retries deduplicate and invalid batches roll back",
   );
+  // Purge only this run's synthetic import. Include finalized and unfinished files.
+  const purgeBid = await readBid(ok(receipts[0]).ids[0]);
+  ok(
+    await bidder.rpc("update_bid_cell", {
+      p_bid: purgeBid.id,
+      p_field: "company",
+      p_value: "Purge UI",
+      p_version: purgeBid.version,
+    }),
+  );
+  const purgePaths = [];
+  for (const finalized of [true, false]) {
+    const id = ok(
+      await bidder.rpc("prepare_file", {
+        p_kind: "screenshot",
+        p_target: purgeBid.id,
+        p_filename: "purge.png",
+        p_mime: "image/png",
+        p_size: proof.length,
+      }),
+    );
+    const f = ok(await admin.from("files").select("*").eq("id", id).single());
+    purgePaths.push(f.storage_path);
+    ok(
+      await bidder.storage
+        .from("private-files")
+        .upload(f.storage_path, proof, { contentType: "image/png" }),
+    );
+    if (finalized)
+      ok(
+        await admin.rpc("finalize_verified_file", {
+          p_id: id,
+          p_actor: invited.id,
+          p_sha: createHash("sha256").update(proof).digest("hex"),
+        }),
+      );
+  }
+  await cp.goto(`${origin}/bids`);
+  await cp.getByRole("button", { name: "All dates", exact: true }).click();
+  await cp.getByLabel("Search bids").fill("Purge UI");
+  await cp.getByRole("checkbox", { name: "Select current page" }).check();
+  await cp
+    .getByRole("button", { name: "Move selected to trash", exact: true })
+    .click();
+  await expect(
+    cp.getByText("Selected bids moved to trash", { exact: true }),
+  ).toBeVisible();
+  await cp.getByRole("button", { name: "Trash", exact: true }).click();
+  await cp.getByRole("checkbox", { name: "Select current page" }).check();
+  await cp
+    .getByRole("button", { name: "Delete selected permanently", exact: true })
+    .click();
+  await expect(
+    cp.getByRole("heading", { name: "Permanently delete 1 bids?" }),
+  ).toBeVisible();
+  await cp.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await cp
+    .getByRole("button", { name: "Permanently delete", exact: true })
+    .click();
+  await expect(cp.getByText(/1 applications deleted\./).first()).toBeVisible();
+  const operation = ok(
+    await admin
+      .from("bid_purge_operations")
+      .select("*")
+      .eq("actor_id", owner.id)
+      .not("completed_at", "is", null)
+      .single(),
+  );
+  assert.deepEqual(
+    ok(await client.rpc("confirm_bid_purge", { p_operation: operation.id })),
+    { id: operation.id, deletedCount: 1 },
+  );
+  assert.ok(
+    (await other.rpc("retry_bid_cleanup", { p_operation: operation.id })).error,
+  );
+  assert.equal(ok(await bidder.rpc("import_bids", payload)).purgedCount, 1);
+  assert.equal(
+    ok(await admin.from("bids").select("id").eq("id", purgeBid.id)).length,
+    0,
+  );
+  assert.equal(
+    ok(await admin.from("bid_events").select("id").eq("bid_id", purgeBid.id))
+      .length,
+    0,
+  );
+  assert.equal(
+    ok(await admin.from("files").select("id").eq("bid_id", purgeBid.id)).length,
+    0,
+  );
+  for (const path of purgePaths)
+    assert.ok((await admin.storage.from("private-files").download(path)).error);
+  assert.equal(
+    ok(await client.rpc("bid_purge_status", { p_operation: operation.id }))
+      .verifyingFiles,
+    2,
+  );
+  // Simulate an upload finishing after the initial removal, on this synthetic path only.
+  ok(
+    await admin.storage
+      .from("private-files")
+      .upload(purgePaths[1], proof, { contentType: "image/png" }),
+  );
+  ok(
+    await admin
+      .from("storage_cleanup_tasks")
+      .update({ next_attempt_at: new Date(0).toISOString() })
+      .eq("operation_id", operation.id),
+  );
+  assert.ok(process.env.CRON_SECRET, "Staging CRON_SECRET required");
+  const cronHeaders = {
+    authorization: `Bearer ${process.env.CRON_SECRET}`,
+    ...(process.env.SMOKE_VERCEL_BYPASS
+      ? { "x-vercel-protection-bypass": process.env.SMOKE_VERCEL_BYPASS }
+      : {}),
+  };
+  const cron = await fetch(`${origin}/api/cron/storage-cleanup`, {
+    headers: cronHeaders,
+  });
+  assert.equal(cron.status, 200);
+  assert.equal(
+    ok(await client.rpc("bid_purge_status", { p_operation: operation.id }))
+      .pendingFiles,
+    0,
+  );
+  for (const path of purgePaths)
+    assert.ok((await admin.storage.from("private-files").download(path)).error);
+  assert.equal(
+    ok(await admin.from("resumes").select("id").eq("id", resume.id)).length,
+    1,
+  );
+  pass(
+    "Bulk checkbox trash and permanent deletion remove history/all proof; import retry cannot resurrect; delayed cron catches in-flight files",
+  );
+  const emptyBid = ok(
+    await bidder.rpc("save_bid", {
+      p_id: null,
+      p_resume: resume.id,
+      p_company: "Empty scope",
+      p_role: "Engineer",
+      p_url: "https://example.com/purge/empty",
+      p_source: "",
+      p_arrangement: "remote",
+      p_status: "open",
+    }),
+  );
+  ok(await bidder.rpc("trash_bid", { p_bid: emptyBid, p_deleted: true }));
+  assert.ok(
+    (
+      await bidder.rpc("prepare_bid_purge", {
+        p_mode: "all",
+        p_targets: [],
+        p_bidder: null,
+      })
+    ).error,
+  );
+  await cp.getByLabel("Search bids").fill("no matching rows");
+  await cp.getByRole("button", { name: "Today (CT)", exact: true }).click();
+  await cp.getByRole("button", { name: "Empty trash", exact: true }).click();
+  await expect(
+    cp.getByRole("heading", { name: "Permanently delete 1 bids?" }),
+  ).toBeVisible();
+  await expect(cp.getByRole("dialog")).toContainText(
+    "All trash in your workspace",
+  );
+  await cp.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await cp
+    .getByRole("button", { name: "Permanently delete", exact: true })
+    .click();
+  await expect(cp.getByRole("dialog")).toHaveCount(0);
+  assert.equal(
+    ok(await admin.from("bids").select("id").eq("id", emptyBid)).length,
+    0,
+  );
+  pass(
+    "Empty trash ignores date/search filters within the client workspace; bidders cannot purge",
+  );
   ok(
     await client.rpc("update_bidder", {
       p_bidder: invited.id,
@@ -843,6 +1019,31 @@ try {
     ok(await admin.from("workspaces").delete().in("id", workspaces));
   }
   if (users.length) {
+    const ops = ok(
+      await admin
+        .from("bid_purge_operations")
+        .select("id")
+        .in("actor_id", users),
+    );
+    if (ops.length) {
+      const opIds = ops.map((o) => o.id);
+      const tasks = ok(
+        await admin
+          .from("storage_cleanup_tasks")
+          .select("storage_path")
+          .in("operation_id", opIds),
+      );
+      const paths = tasks.map((t) => t.storage_path).filter(Boolean);
+      if (paths.length)
+        ok(await admin.storage.from("private-files").remove(paths));
+      ok(
+        await admin
+          .from("storage_cleanup_tasks")
+          .delete()
+          .in("operation_id", opIds),
+      );
+      ok(await admin.from("bid_purge_operations").delete().in("id", opIds));
+    }
     ok(await admin.from("bid_import_receipts").delete().in("actor_id", users));
     ok(await admin.from("account_events").delete().in("account_id", users));
     ok(

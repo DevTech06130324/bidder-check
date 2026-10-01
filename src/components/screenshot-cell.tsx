@@ -13,7 +13,15 @@ import {
 } from "./ui/dialog";
 import { FileUpload } from "./file-upload";
 
-export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
+export function ScreenshotCell({
+  bid,
+  disabled,
+  onBusy,
+}: {
+  bid: Row<"bids">;
+  disabled?: boolean;
+  onBusy?: (value: boolean) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState("");
@@ -79,7 +87,12 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
         </Button>
       )}
       {!bid.deleted_at && !uploadOpen && (
-        <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => setUploadOpen(true)}
+        >
           {bid.applied
             ? "Replace screenshot"
             : bid.evidence_file_id
@@ -89,6 +102,8 @@ export function ScreenshotCell({ bid }: { bid: Row<"bids"> }) {
       )}
       {!bid.deleted_at && uploadOpen && (
         <FileUpload
+          disabled={disabled}
+          onBusy={onBusy}
           compact
           kind="screenshot"
           target={bid.id}

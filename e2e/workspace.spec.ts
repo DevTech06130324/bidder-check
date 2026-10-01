@@ -90,6 +90,7 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
     page.getByRole("button", { name: "Today (CT)", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("columnheader")).toHaveText([
+    "",
     "#",
     "Added date (CT)",
     "Resume ID",

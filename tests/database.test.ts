@@ -969,3 +969,228 @@ it("commits the maximum 500-row batch once and preserves original results on ret
     ).rows[0].n,
   ).toBe(500);
 });
+it("bulk mutations are atomic and permanent deletion is manager-only, snapshot-bound and retry-safe", async () => {
+  await asUser(bidder);
+  const targets = (
+    await db.query<{ id: string; version: number }>(
+      "select id,version from public.bids where url like 'https://example.com/capacity/%' order by id limit 2",
+    )
+  ).rows;
+  await expect(
+    db.query("select public.bulk_bid_state($1::jsonb,true)", [
+      JSON.stringify([targets[0], { ...targets[1], version: -1 }]),
+    ]),
+  ).rejects.toThrow(/changed/i);
+  expect(
+    (
+      await db.query<{ n: number }>(
+        "select count(*)::int n from public.bids where id=$1 and deleted_at is null",
+        [targets[0].id],
+      )
+    ).rows[0].n,
+  ).toBe(1);
+  await db.query("select public.bulk_bid_state($1::jsonb,true)", [
+    JSON.stringify(targets),
+  ]);
+  const trashed = targets.map((t) => ({ ...t, version: t.version + 1 }));
+  await expect(
+    db.query("select public.prepare_bid_purge('selected',$1::jsonb,null)", [
+      JSON.stringify(trashed),
+    ]),
+  ).rejects.toThrow(/manager|denied/i);
+  await asUser(client);
+  const op = (
+    await db.query<{ r: { id: string; count: number } }>(
+      "select public.prepare_bid_purge('selected',$1::jsonb,null) r",
+      [JSON.stringify(trashed)],
+    )
+  ).rows[0].r;
+  expect(op.count).toBe(2);
+  await asUser(other);
+  await expect(
+    db.query("select public.confirm_bid_purge($1)", [op.id]),
+  ).rejects.toThrow(/denied/i);
+  await asUser(client);
+  const deleted = (
+    await db.query<{ r: { deletedCount: number } }>(
+      "select public.confirm_bid_purge($1) r",
+      [op.id],
+    )
+  ).rows[0].r;
+  expect(deleted.deletedCount).toBe(2);
+  expect(
+    (
+      await db.query<{ r: unknown }>("select public.confirm_bid_purge($1) r", [
+        op.id,
+      ])
+    ).rows[0].r,
+  ).toEqual(deleted);
+  expect(
+    (
+      await db.query("select id from public.bids where id=any($1::uuid[])", [
+        targets.map((t) => t.id),
+      ])
+    ).rows,
+  ).toHaveLength(0);
+  await asUser(bidder);
+  const receipt = (
+    await db.query<{ result: { ids: string[] }; payload_hash: string }>(
+      "select * from public.bid_import_receipts where request_id=$1",
+      ["00000000-0000-4000-8000-000000000096"],
+    )
+  ).rows[0];
+  expect(receipt.payload_hash).toHaveLength(64);
+  const rid = (
+    await db.query<{ id: string }>(
+      "select id from public.resumes where identifier='SHEET-01'",
+    )
+  ).rows[0].id;
+  const rows = Array.from({ length: 500 }, (_, i) => ({
+    company: `Capacity ${i}`,
+    role_name: "Engineer",
+    url: `https://example.com/capacity/${i}`,
+    source: "",
+    arrangement: "remote",
+    job_status: "open",
+  }));
+  const replay = (
+    await db.query<{ r: { purgedCount: number } }>(
+      "select public.import_bids($1,'2025-10-01',$2::jsonb,$3) r",
+      [rid, JSON.stringify(rows), "00000000-0000-4000-8000-000000000096"],
+    )
+  ).rows[0].r;
+  expect(replay.purgedCount).toBe(2);
+});
+
+it("purge rejects expired/changed snapshots, isolates scope and cleans unfinished proof in leased passes", async () => {
+  await asUser(bidder);
+  const make = async (suffix: string) =>
+    (
+      await db.query<{ id: string }>(
+        "select public.save_bid(null,$1,'Purge','Engineer',$2,'','remote','open') id",
+        [resume, `https://example.com/purge/${suffix}`],
+      )
+    ).rows[0].id;
+  const one = await make("one"),
+    two = await make("two");
+  const proof = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('screenshot',$1,'unfinished.png','image/png',100) id",
+      [one],
+    )
+  ).rows[0].id;
+  await db.query("select public.trash_bid($1,true)", [one]);
+  await asUser(client);
+  const prepare = async () =>
+    (
+      await db.query<{ r: { id: string; count: number } }>(
+        "select public.prepare_bid_purge('selected',(select jsonb_agg(jsonb_build_object('id',id,'version',version)) from public.bids where id=$1),$2) r",
+        [one, bidder],
+      )
+    ).rows[0].r;
+  const stale = await prepare();
+  await db.query("select public.trash_bid($1,false)", [one]);
+  await expect(
+    db.query("select public.confirm_bid_purge($1)", [stale.id]),
+  ).rejects.toThrow(/changed/i);
+  await db.query("select public.trash_bid($1,true)", [one]);
+  const expired = await prepare();
+  await db.exec("reset role");
+  await db.query(
+    "update public.bid_purge_operations set expires_at=now()-interval '1 second' where id=$1",
+    [expired.id],
+  );
+  await asUser(client);
+  await expect(
+    db.query("select public.confirm_bid_purge($1)", [expired.id]),
+  ).rejects.toThrow(/expired/i);
+  const op = await prepare();
+  await db.query("select public.trash_bid($1,true)", [two]);
+  await db.query("select public.confirm_bid_purge($1)", [op.id]);
+  expect(
+    (await db.query("select id from public.bids where id=$1", [two])).rows,
+  ).toHaveLength(1);
+  expect(
+    (await db.query("select id from public.files where id=$1", [proof])).rows,
+  ).toHaveLength(0);
+  expect(
+    (await db.query("select id from public.bid_events where bid_id=$1", [one]))
+      .rows,
+  ).toHaveLength(0);
+  expect(
+    (await db.query("select id from public.resumes where id=$1", [resume]))
+      .rows,
+  ).toHaveLength(1);
+  await expect(
+    db.query("select * from public.storage_cleanup_tasks"),
+  ).rejects.toThrow(/permission/i);
+  await expect(
+    db.query("select public.claim_storage_cleanup(null,50)"),
+  ).rejects.toThrow(/permission/i);
+  await asUser(other);
+  await expect(
+    db.query("select public.retry_bid_cleanup($1)", [op.id]),
+  ).rejects.toThrow(/denied/i);
+  await asUser(client);
+  const status = async () =>
+    (
+      await db.query<{
+        r: {
+          pendingFiles: number;
+          verifyingFiles: number;
+          failedFiles: number;
+        };
+      }>("select public.bid_purge_status($1) r", [op.id])
+    ).rows[0].r;
+  expect((await status()).pendingFiles).toBe(1);
+  await db.exec("reset role;set role service_role");
+  const claim = async () =>
+    (
+      await db.query<{ id: string; lease_id: string }>(
+        "select * from public.claim_storage_cleanup($1,50)",
+        [op.id],
+      )
+    ).rows;
+  const task = (await claim())[0];
+  expect(await claim()).toHaveLength(0);
+  await db.query("select public.finish_storage_cleanup($1,$2,false)", [
+    task.id,
+    task.lease_id,
+  ]);
+  await asUser(client);
+  expect((await status()).failedFiles).toBe(1);
+  await db.query("select public.retry_bid_cleanup($1)", [op.id]);
+  await db.exec("reset role;set role service_role");
+  const retry = (await claim())[0];
+  await db.query("select public.finish_storage_cleanup($1,$2,true)", [
+    retry.id,
+    retry.lease_id,
+  ]);
+  expect(await claim()).toHaveLength(0);
+  await asUser(client);
+  expect((await status()).verifyingFiles).toBe(1);
+  await db.query("select public.retry_bid_cleanup($1)", [op.id]);
+  await db.exec("reset role;set role service_role");
+  expect(await claim()).toHaveLength(0);
+  await db.query(
+    "update public.storage_cleanup_tasks set next_attempt_at=now()-interval '1 second' where id=$1",
+    [task.id],
+  );
+  const final = (await claim())[0];
+  await db.query("select public.finish_storage_cleanup($1,$2,true)", [
+    final.id,
+    final.lease_id,
+  ]);
+  expect(
+    (
+      await db.query<{ storage_path: string | null }>(
+        "select storage_path from public.storage_cleanup_tasks where id=$1",
+        [task.id],
+      )
+    ).rows[0].storage_path,
+  ).toBeNull();
+  await asUser(client);
+  expect((await status()).pendingFiles).toBe(0);
+  await asUser(bidder);
+  await expect(make("one")).resolves.toBeTruthy();
+});

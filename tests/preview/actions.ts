@@ -20,12 +20,18 @@ export const authenticate = unavailable,
   getFileUrl = unavailable;
 export const getBidHistory = async () => ({ data: [] });
 
+let reads = 0;
 export async function getBidRows(
   mode: string,
   from: string,
   to: string,
   trash: boolean,
 ) {
+  if (
+    new URLSearchParams(window.location.search).has("refresh-failure") &&
+    reads++ > 0
+  )
+    return { error: "Refresh unavailable" };
   const { fixture } = await import("./sample-data");
   const { chicagoDateRange } = await import("@/lib/domain");
   try {
@@ -78,3 +84,41 @@ export async function trashBid(id: string, deleted: boolean) {
   );
   return { data: undefined };
 }
+
+export async function bulkBidState(
+  targets: { id: string; version: number }[],
+  deleted: boolean,
+) {
+  const { fixture } = await import("./sample-data");
+  const ids = new Set(targets.map((t) => t.id));
+  fixture.bids = fixture.bids.map((b) =>
+    ids.has(b.id)
+      ? {
+          ...b,
+          deleted_at: deleted ? new Date().toISOString() : null,
+          version: b.version + 1,
+        }
+      : b,
+  );
+  return { data: targets.length };
+}
+export async function prepareBidPurge(
+  mode: string,
+  targets: { id: string; version: number }[],
+) {
+  const { fixture } = await import("./sample-data");
+  return {
+    data: {
+      id: "fixture-operation",
+      count:
+        mode === "all"
+          ? fixture.bids.filter((b) => b.deleted_at).length
+          : targets.length,
+      scope: "Selected trashed bids",
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+    },
+  };
+}
+export const confirmBidPurge = unavailable,
+  getPurgeStatus = unavailable;
+export const recentBidPurges = async () => ({ data: [] });

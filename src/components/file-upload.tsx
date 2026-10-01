@@ -12,12 +12,16 @@ export function FileUpload({
   onUploaded,
   compact = false,
   label,
+  disabled = false,
+  onBusy,
 }: {
   kind: "resume" | "screenshot";
   target: string;
   onUploaded?: (id: string) => void;
   compact?: boolean;
   label?: string;
+  disabled?: boolean;
+  onBusy?: (value: boolean) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
@@ -26,8 +30,9 @@ export function FileUpload({
   const retryFile = useRef<File | null>(null);
   const busy = useRef(false);
   async function upload(file: File) {
-    if (busy.current) return;
+    if (busy.current || disabled) return;
     busy.current = true;
+    onBusy?.(true);
     retryFile.current = file;
     setError("");
     try {
@@ -94,6 +99,7 @@ export function FileUpload({
       toast.error(message);
     } finally {
       busy.current = false;
+      onBusy?.(false);
       setProgress(null);
       if (input.current) input.current.value = "";
     }
@@ -127,7 +133,7 @@ export function FileUpload({
           kind === "resume" ? "Choose resume file" : "Choose screenshot"
         }
         accept={uploadTypes[kind].join(",")}
-        disabled={progress !== null}
+        disabled={disabled || progress !== null}
         onChange={(e) => {
           if (e.target.files?.[0]) void upload(e.target.files[0]);
         }}

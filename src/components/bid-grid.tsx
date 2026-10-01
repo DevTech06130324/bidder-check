@@ -35,7 +35,13 @@ export function BidGrid({
   onBusy,
   onPaste,
   onOpen,
+  checked,
+  onCheck,
+  disabled = false,
 }: {
+  checked: Record<string, number>;
+  onCheck: (rows: Bid[], value: boolean) => void;
+  disabled?: boolean;
   table: Table<Bid>;
   data: WorkspaceData;
   onRow: (row: Bid) => void;
@@ -95,7 +101,7 @@ export function BidGrid({
     dragging.current = false;
     const bid = rows[point.r]?.original,
       field = columns[point.c]?.id;
-    if (!bid || bid.deleted_at) return;
+    if (disabled || !bid || bid.deleted_at) return;
     if (field === "applied") {
       if (data.profile.role !== "bidder") onOpen(bid);
       return;
@@ -256,6 +262,29 @@ export function BidGrid({
         <thead className="sticky top-0 z-10 bg-background shadow-sm">
           {table.getHeaderGroups().map((group) => (
             <tr key={group.id}>
+              <th className="border px-2 py-2">
+                <input
+                  type="checkbox"
+                  aria-label="Select current page"
+                  disabled={disabled || !!edit}
+                  checked={
+                    rows.length > 0 &&
+                    rows.every((row) => checked[row.id] !== undefined)
+                  }
+                  ref={(element) => {
+                    if (element)
+                      element.indeterminate =
+                        rows.some((row) => checked[row.id] !== undefined) &&
+                        !rows.every((row) => checked[row.id] !== undefined);
+                  }}
+                  onChange={(e) =>
+                    onCheck(
+                      rows.map((row) => row.original),
+                      e.target.checked,
+                    )
+                  }
+                />
+              </th>
               <th className="border px-2 py-2" aria-label="Row number">
                 #
               </th>
@@ -278,6 +307,15 @@ export function BidGrid({
         <tbody>
           {rows.map((row, r) => (
             <tr key={row.id} className="hover:bg-muted/30">
+              <td className="border px-2 py-2">
+                <input
+                  type="checkbox"
+                  aria-label={`Select bid at ${row.original.company}`}
+                  disabled={disabled || !!edit}
+                  checked={checked[row.id] !== undefined}
+                  onChange={(e) => onCheck([row.original], e.target.checked)}
+                />
+              </td>
               <th
                 scope="row"
                 className="border bg-muted/30 px-2 text-center text-muted-foreground"
@@ -469,10 +507,12 @@ export function BidGrid({
                       </div>
                     ) : (
                       <>
-                        {flexRender(
-                          cell.column.columnDef.cell,
-                          cell.getContext(),
-                        )}
+                        {typeof cell.column.columnDef.cell === "function"
+                          ? cell.column.columnDef.cell(cell.getContext())
+                          : flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext(),
+                            )}
                         {saved === `${row.original.id}:${cell.column.id}` && (
                           <span
                             role="status"

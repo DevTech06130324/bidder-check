@@ -52,7 +52,10 @@ const { rows: fns } = await db.query(
 );
 for (const f of fns) {
   const types = f.args ? f.args.split(", ") : [];
-  out += `${f.proname}: { Args: ${types.length ? "{ " + types.map((t, i) => `${f.proargnames[i]}: ${map(t)} | null`).join("; ") + " }" : "Record<string, never>"}; Returns: ${map(f.result)} };\n`;
+  const result = f.result.startsWith("SETOF ")
+    ? `Database["public"]["Tables"]["${f.result.slice(6).replace("public.", "")}"]["Row"][]`
+    : map(f.result);
+  out += `${f.proname}: { Args: ${types.length ? "{ " + types.map((t, i) => `${f.proargnames[i]}: ${map(t)} | null`).join("; ") + " }" : "Record<string, never>"}; Returns: ${result} };\n`;
 }
 out +=
   '}; Enums: { [_ in never]: never }; CompositeTypes: { [_ in never]: never } } };\nexport type Row<T extends keyof Database["public"]["Tables"]> = Database["public"]["Tables"][T]["Row"];\n';

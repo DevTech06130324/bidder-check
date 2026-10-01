@@ -1,5 +1,5 @@
 ﻿import { test, expect } from "@playwright/test";
-test("500-row preview remains usable with Unicode, quoted multiline values and headers", async ({
+test("500-row preview remains usable with Unicode, quoted multiline values", async ({
   page,
 }) => {
   await page.goto("http://127.0.0.1:3001/bids");
@@ -12,15 +12,12 @@ test("500-row preview remains usable with Unicode, quoted multiline values and h
   await page
     .getByLabel("Import resume", { exact: true })
     .selectOption("resume-0");
-  const clipboard =
-    "Company\tRole\tURL\n" +
-    Array.from(
-      { length: 500 },
-      (_, i) =>
-        `"\u6771\u4eac ${i}"\t"Engineer\nMultiline"\thttps://example.com/jobs/${i}`,
-    ).join("\n");
+  const clipboard = Array.from(
+    { length: 500 },
+    (_, i) =>
+      `"\u6771\u4eac ${i}"\t"Engineer\nMultiline"\thttps://example.com/jobs/${i}`,
+  ).join("\n");
   await page.getByLabel("Copied Google Sheets cells").fill(clipboard);
-  await page.getByLabel("First row contains headers").check();
   await page.getByRole("button", { name: "Read columns" }).click();
   await page.getByRole("button", { name: "Preview bids" }).click();
   await expect(

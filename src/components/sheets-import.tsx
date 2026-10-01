@@ -40,8 +40,7 @@ export function SheetsImport({
   onClose: () => void;
   onSuccess: (result: ImportResult) => void;
 }) {
-  const [text, setText] = useState(initialText),
-    [headers, setHeaders] = useState(false);
+  const [text, setText] = useState(initialText);
   const [workspace, setWorkspace] = useState(
     data.bidders.find((b) => b.user_id === bidderId)?.workspace_id ??
       data.workspaces[0]?.id ??
@@ -107,8 +106,8 @@ export function SheetsImport({
   }, [rows, resume, date, localErrors]);
   function parse() {
     try {
-      const parsed = parseSheet(text, headers ? 501 : 500);
-      const values = headers ? parsed.slice(1) : parsed;
+      const parsed = parseSheet(text);
+      const values = parsed;
       if (!values.length) throw new Error("Paste at least one data row.");
       setSource(parsed);
       setMapping(
@@ -128,11 +127,7 @@ export function SheetsImport({
         throw new Error("Choose a bidder, resume and Added date.");
       if (!mapping.includes("url"))
         throw new Error("Map one column to Job URL.");
-      const mapped = mapSheet(
-        headers ? source.slice(1) : source,
-        mapping,
-        defaults,
-      );
+      const mapped = mapSheet(source, mapping, defaults);
       if (mapped.length > 500) throw new Error("Import at most 500 rows.");
       setRows(mapped);
       setServerErrors([]);
@@ -163,7 +158,11 @@ export function SheetsImport({
         setServerErrors(result.data.errors);
         setAttempted(false);
       } else if (result.data?.ids) {
-        toast.success(`${result.data.ids.length} bids imported`);
+        toast.success(
+          result.data.purgedCount
+            ? `Original import completed; ${result.data.purgedCount} bids were subsequently deleted. No bids recreated.`
+            : `${result.data.ids.length} bids imported`,
+        );
         onSuccess(result.data);
       }
     } catch {
@@ -248,17 +247,6 @@ export function SheetsImport({
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
               />
-              {(["company", "role_name", "source"] as const).map((f) => (
-                <Field
-                  key={f}
-                  label={`Default ${fieldLabels[f].toLowerCase()}`}
-                  value={defaults[f] ?? ""}
-                  maxLength={200}
-                  onChange={(e) =>
-                    setDefaults({ ...defaults, [f]: e.target.value })
-                  }
-                />
-              ))}
               <SelectField
                 label="Default work arrangement"
                 value={defaults.arrangement}
@@ -295,20 +283,10 @@ export function SheetsImport({
                 placeholder="Paste cells here (Ctrl/Cmd+V)"
               />
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={headers}
-                onChange={(e) => {
-                  setHeaders(e.target.checked);
-                  setSource([]);
-                }}
-              />
-              First row contains headers
-            </label>
             <p className="text-xs text-muted-foreground">
-              Up to 500 bids and 512 KiB. Blank mapped cells use shared
-              defaults.
+              Up to 500 bids and 512 KiB. Every row is data: paste without
+              headings or remove the heading row in preview. Company and role
+              are required; job site is optional.
             </p>
             <Button variant="outline" onClick={parse}>
               Read columns

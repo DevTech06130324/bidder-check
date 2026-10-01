@@ -12,6 +12,8 @@ import type { Database } from "@/lib/database.types";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { validateScreenshotBytes } from "@/lib/image-validation";
+import { runStorageCleanup } from "@/lib/storage-cleanup";
+import type { BidTarget, PurgeSnapshot, PurgeStatus } from "@/lib/bulk-types";
 
 type Result<T = undefined> = { data?: T; error?: string };
 async function perform<T>(
@@ -448,10 +450,65 @@ export async function importBids(
       p_request: z.uuid().parse(request),
     })) as {
       ids?: string[];
+      purgedCount?: number;
       errors?: import("@/lib/sheets").ImportError[];
       date: string;
       bidder: string;
       resume: string;
     };
   });
+}
+
+const bidTargets = z
+  .array(z.object({ id: z.uuid(), version: z.number().int().nonnegative() }))
+  .min(1)
+  .max(500);
+export async function bulkBidState(targets: BidTarget[], deleted: boolean) {
+  return perform(async () =>
+    rpc("bulk_bid_state", {
+      p_targets: bidTargets.parse(targets),
+      p_deleted: z.boolean().parse(deleted),
+    }),
+  );
+}
+export async function prepareBidPurge(
+  mode: "selected" | "all",
+  targets: BidTarget[],
+  bidder?: string,
+) {
+  return perform(
+    async () =>
+      (await rpc("prepare_bid_purge", {
+        p_mode: z.enum(["selected", "all"]).parse(mode),
+        p_targets: mode === "selected" ? bidTargets.parse(targets) : [],
+        p_bidder: bidder ? z.uuid().parse(bidder) : null,
+      })) as PurgeSnapshot,
+    false,
+  );
+}
+export async function confirmBidPurge(operation: string, confirmation: string) {
+  return perform(async () => {
+    if (confirmation !== "DELETE") throw new Error("Type DELETE to confirm.");
+    const op = z.uuid().parse(operation);
+    await rpc("confirm_bid_purge", { p_operation: op });
+    // Application deletion succeeded even if Storage is temporarily unavailable.
+    await runStorageCleanup(op).catch(() => undefined);
+    return (await rpc("bid_purge_status", { p_operation: op })) as PurgeStatus;
+  });
+}
+export async function getPurgeStatus(operation: string, retry = false) {
+  return perform(async () => {
+    const op = z.uuid().parse(operation);
+    await rpc(retry ? "retry_bid_cleanup" : "bid_purge_status", {
+      p_operation: op,
+    });
+    if (retry) await runStorageCleanup(op).catch(() => undefined);
+    return (await rpc("bid_purge_status", { p_operation: op })) as PurgeStatus;
+  }, false);
+}
+export async function recentBidPurges() {
+  return perform(
+    async () => (await rpc("recent_bid_purges", {})) as PurgeStatus[],
+    false,
+  );
 }

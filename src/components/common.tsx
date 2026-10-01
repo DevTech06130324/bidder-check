@@ -25,7 +25,9 @@ export function PageHeading({
         <h1 className="text-[28px] font-semibold tracking-[-1px]">{title}</h1>
         <p className="mt-2 text-[13px] text-muted-foreground">{description}</p>
       </div>
-      {children}
+      {children && (
+        <div className="flex shrink-0 items-center gap-2">{children}</div>
+      )}
     </div>
   );
 }

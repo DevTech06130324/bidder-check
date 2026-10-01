@@ -66,23 +66,59 @@ export type Database = {
         Row: {
           actor_id: string;
           request_id: string;
-          payload: unknown;
           result: unknown;
           created_at: string;
+          payload_hash: string;
         };
         Insert: Partial<{
           actor_id: string;
           request_id: string;
-          payload: unknown;
           result: unknown;
           created_at: string;
+          payload_hash: string;
         }>;
         Update: Partial<{
           actor_id: string;
           request_id: string;
-          payload: unknown;
           result: unknown;
           created_at: string;
+          payload_hash: string;
+        }>;
+        Relationships: [];
+      };
+      bid_purge_operations: {
+        Row: {
+          id: string;
+          actor_id: string;
+          scope: string;
+          bidder_id: string | null;
+          targets: unknown;
+          count: number;
+          created_at: string;
+          expires_at: string;
+          completed_at: string | null;
+        };
+        Insert: Partial<{
+          id: string;
+          actor_id: string;
+          scope: string;
+          bidder_id: string | null;
+          targets: unknown;
+          count: number;
+          created_at: string;
+          expires_at: string;
+          completed_at: string | null;
+        }>;
+        Update: Partial<{
+          id: string;
+          actor_id: string;
+          scope: string;
+          bidder_id: string | null;
+          targets: unknown;
+          count: number;
+          created_at: string;
+          expires_at: string;
+          completed_at: string | null;
         }>;
         Relationships: [];
       };
@@ -356,6 +392,45 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      storage_cleanup_tasks: {
+        Row: {
+          id: string;
+          operation_id: string;
+          storage_path: string | null;
+          attempts: number;
+          first_removed_at: string | null;
+          next_attempt_at: string;
+          completed_at: string | null;
+          lease_id: string | null;
+          lease_until: string | null;
+          last_error: string | null;
+        };
+        Insert: Partial<{
+          id: string;
+          operation_id: string;
+          storage_path: string | null;
+          attempts: number;
+          first_removed_at: string | null;
+          next_attempt_at: string;
+          completed_at: string | null;
+          lease_id: string | null;
+          lease_until: string | null;
+          last_error: string | null;
+        }>;
+        Update: Partial<{
+          id: string;
+          operation_id: string;
+          storage_path: string | null;
+          attempts: number;
+          first_removed_at: string | null;
+          next_attempt_at: string;
+          completed_at: string | null;
+          lease_id: string | null;
+          lease_until: string | null;
+          last_error: string | null;
+        }>;
+        Relationships: [];
+      };
       workspaces: {
         Row: {
           id: string;
@@ -386,7 +461,6 @@ export type Database = {
       require_manager: { Args: { w: string | null }; Returns: undefined };
       url_decode: { Args: { s: string | null }; Returns: string };
       url_encode: { Args: { s: string | null }; Returns: string };
-      normalize_job_url: { Args: { u: string | null }; Returns: string };
       update_client: {
         Args: {
           p_client: string | null;
@@ -395,6 +469,7 @@ export type Database = {
         };
         Returns: undefined;
       };
+      normalize_job_url: { Args: { u: string | null }; Returns: string };
       is_admin: { Args: Record<string, never>; Returns: boolean };
       manages: { Args: { w: string | null }; Returns: boolean };
       can_read: {
@@ -508,6 +583,14 @@ export type Database = {
         };
         Returns: undefined;
       };
+      retry_bid_cleanup: {
+        Args: { p_operation: string | null };
+        Returns: unknown;
+      };
+      bulk_bid_state: {
+        Args: { p_targets: unknown | null; p_deleted: boolean | null };
+        Returns: number;
+      };
       update_bid_cell: {
         Args: {
           p_bid: string | null;
@@ -524,6 +607,35 @@ export type Database = {
           p_rows: unknown | null;
         };
         Returns: unknown;
+      };
+      prepare_bid_purge: {
+        Args: {
+          p_mode: string | null;
+          p_targets: unknown | null;
+          p_bidder: string | null;
+        };
+        Returns: unknown;
+      };
+      confirm_bid_purge: {
+        Args: { p_operation: string | null };
+        Returns: unknown;
+      };
+      bid_purge_status: {
+        Args: { p_operation: string | null };
+        Returns: unknown;
+      };
+      recent_bid_purges: { Args: Record<string, never>; Returns: unknown };
+      claim_storage_cleanup: {
+        Args: { p_operation: string | null; p_limit: number | null };
+        Returns: Database["public"]["Tables"]["storage_cleanup_tasks"]["Row"][];
+      };
+      finish_storage_cleanup: {
+        Args: {
+          p_task: string | null;
+          p_lease: string | null;
+          p_success: boolean | null;
+        };
+        Returns: undefined;
       };
       import_bids: {
         Args: {
