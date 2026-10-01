@@ -47,9 +47,10 @@ export function BulkBidToolbar({
   const [error, setError] = useState(""),
     [operations, setOperations] = useState<PurgeStatus[]>([]);
   function remember(status: PurgeStatus) {
-    setOperations((current) =>
-      [status, ...current.filter((o) => o.id !== status.id)].slice(0, 10),
-    );
+    setOperations((current) => [
+      status,
+      ...current.filter((o) => o.id !== status.id),
+    ]);
   }
   useEffect(() => {
     if (!manager) return;

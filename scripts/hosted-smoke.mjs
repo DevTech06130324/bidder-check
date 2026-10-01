@@ -781,7 +781,7 @@ try {
       await bidder.rpc("prepare_file", {
         p_kind: "screenshot",
         p_target: purgeBid.id,
-        p_filename: "purge.png",
+        p_name: "purge.png",
         p_mime: "image/png",
         p_size: proof.length,
       }),

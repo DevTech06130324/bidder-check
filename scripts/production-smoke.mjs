@@ -58,6 +58,13 @@ try {
   assert.deepEqual(ok(await client.from("bids").select("id")), []);
   for (const [name, args] of [
     [
+      "bulk_bid_state",
+      { p_targets: [{ id: randomUUID(), version: 0 }], p_deleted: true },
+    ],
+    ["prepare_bid_purge", { p_mode: "all", p_targets: [], p_bidder: null }],
+    ["confirm_bid_purge", { p_operation: randomUUID() }],
+    ["retry_bid_cleanup", { p_operation: randomUUID() }],
+    [
       "update_bid_cell",
       {
         p_bid: randomUUID(),

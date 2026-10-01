@@ -1194,3 +1194,28 @@ it("purge rejects expired/changed snapshots, isolates scope and cleans unfinishe
   await asUser(bidder);
   await expect(make("one")).resolves.toBeTruthy();
 });
+
+it("keeps older unfinished cleanup discoverable after newer completed purges", async () => {
+  await db.exec("reset role");
+  const old = (
+    await db.query<{ id: string }>(
+      "insert into public.bid_purge_operations(actor_id,scope,targets,count,completed_at) values($1,'Selected trashed bids','[]',1,now()-interval '1 day') returning id",
+      [client],
+    )
+  ).rows[0].id;
+  await db.query(
+    "insert into public.storage_cleanup_tasks(operation_id,storage_path,last_error) values($1,'synthetic/pending','retry pending')",
+    [old],
+  );
+  await db.query(
+    "insert into public.bid_purge_operations(actor_id,scope,targets,count,completed_at) select $1,'Selected trashed bids','[]',1,now() from generate_series(1,11)",
+    [client],
+  );
+  await asUser(client);
+  const status = (
+    await db.query<{ r: { id: string }[] }>(
+      "select public.recent_bid_purges() r",
+    )
+  ).rows[0].r;
+  expect(status.map((o) => o.id)).toContain(old);
+});

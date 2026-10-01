@@ -86,7 +86,7 @@ end $$;
 
 create function public.recent_bid_purges() returns jsonb language plpgsql security definer set search_path='' as $$
 declare result jsonb='[]'; op record; begin
- for op in select id from public.bid_purge_operations where actor_id=auth.uid() and completed_at is not null order by completed_at desc limit 10 loop
+ for op in select o.id from public.bid_purge_operations o where o.actor_id=auth.uid() and o.completed_at is not null and exists(select 1 from public.storage_cleanup_tasks t where t.operation_id=o.id and t.completed_at is null) order by o.completed_at desc loop
   result=result||jsonb_build_array(public.bid_purge_status(op.id));
  end loop;
  return result;

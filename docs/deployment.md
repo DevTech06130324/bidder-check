@@ -55,3 +55,12 @@ The test runner uses network-appropriate assertion timeouts. An initial staging 
 Production smoke checks also verify that pending accounts cannot call the new spreadsheet RPCs or read import receipts. No SMTP configuration or new runtime environment variables are required.
 
 Production release: commit `85a755b` reached READY at deployment `dpl_8QKRL5KLJ4MZ32EuLmjmtkLExKuK` on https://bidder-check.vercel.app. Both spreadsheet migrations applied successfully. Post-release production checks passed: designated admin remains active, public metadata cannot grant approval/roles, pending accounts cannot access workspace data or spreadsheet RPCs/receipts, and approval routing, password change and sign-out work. The synthetic production verification account was removed. Later documentation-only commits may create equivalent deployments through Git integration.
+
+
+## Bulk controls and permanent trash deletion
+
+Migration `202609300004_bulk_bid_controls.sql` adds actor-bound confirmation snapshots, version-checked bulk actions, durable screenshot cleanup, and SHA-256 import receipt fingerprints. Apply on staging before production; completed import retries never recreate purged rows. Selected operations are capped at 500; Empty trash uses the full authorized scope, with fixed-bidder pages remaining scoped.
+
+Set a distinct server-only `CRON_SECRET` in Preview and Production. `vercel.json` schedules `/api/cron/storage-cleanup` daily at 05:00 UTC. Preview does not automatically run Vercel cron: exercise the route with the staging bearer secret. The worker processes at most 50 files per call, leases tasks for two minutes, retains failed tasks, and requires a second successful removal at least five minutes after the first. Application deletion is immediate; screenshot cleanup stays pending until verified. Managers can retry pending work in the app. Resume objects are never enqueued. Large backlogs drain across bounded manual/daily passes.
+
+Hosted smoke tests create their own staging accounts and purge only those synthetic applications. They simulate an upload finishing after the initial delete, invoke authenticated cron, verify its physical object is removed, and clean their own operation/task records. Production smoke checks pending-account denial for the new RPCs without purging customer data.
