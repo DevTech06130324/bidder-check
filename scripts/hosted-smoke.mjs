@@ -884,11 +884,15 @@ try {
     headers: cronHeaders,
   });
   assert.equal(cron.status, 200);
-  assert.equal(
-    ok(await client.rpc("bid_purge_status", { p_operation: operation.id }))
-      .pendingFiles,
-    0,
-  );
+  // The Supabase Cron trigger may already hold these leases; wait for whichever finishes.
+  await expect
+    .poll(
+      async () =>
+        ok(await client.rpc("bid_purge_status", { p_operation: operation.id }))
+          .pendingFiles,
+      { timeout: 90000, intervals: [2000] },
+    )
+    .toBe(0);
   for (const path of purgePaths)
     assert.ok((await admin.storage.from("private-files").download(path)).error);
   assert.equal(
