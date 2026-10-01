@@ -56,7 +56,6 @@ Production smoke checks also verify that pending accounts cannot call the new sp
 
 Production release: commit `85a755b` reached READY at deployment `dpl_8QKRL5KLJ4MZ32EuLmjmtkLExKuK` on https://bidder-check.vercel.app. Both spreadsheet migrations applied successfully. Post-release production checks passed: designated admin remains active, public metadata cannot grant approval/roles, pending accounts cannot access workspace data or spreadsheet RPCs/receipts, and approval routing, password change and sign-out work. The synthetic production verification account was removed. Later documentation-only commits may create equivalent deployments through Git integration.
 
-
 ## Bulk controls and permanent trash deletion
 
 Migration `202609300004_bulk_bid_controls.sql` adds actor-bound confirmation snapshots, version-checked bulk actions, durable screenshot cleanup, and SHA-256 import receipt fingerprints. Apply on staging before production; completed import retries never recreate purged rows. Selected operations are capped at 500; Empty trash uses the full authorized scope, with fixed-bidder pages remaining scoped.
@@ -82,3 +81,15 @@ Per environment (staging first), as the project owner, outside `supabase db push
 3. Monitor with the queries at the end of the schedule file (`cron.job_run_details`, `net._http_response`). Worker logs contain counts only, never file paths.
 
 Staging acceptance: `SMOKE_VERCEL_BYPASS=<automation bypass> node --env-file=.env.staging scripts/cleanup-schedule-acceptance.mjs`. With no browser open, it purges 61 synthetic applications with real screenshot objects through the database RPCs. It simulates an upload landing after the first removal, then waits for the scheduler alone; it never advances timestamps or calls the worker. It asserts the unauthorized 401, first removal within about two minutes, the five-minute verification wait and removal of every object, then deletes its synthetic accounts and files. For production, deploy the same way and confirm the existing pending operation completes through its queued task; do not create another purge or mark work complete by hand.
+
+`CRON_SECRET` is a Vercel _sensitive_ variable, so `vercel env pull` returns a placeholder, not the value. Take the Vault value from the operator's secure record (`.env.local` for production, `.env.staging` for staging). A mismatch shows as HTTP 401 rows in `net._http_response`.
+
+Release 2026-10-01: commit `602c190`, production deployment `dpl_3dWRXZFmTN6R8yJ31tgzfgh9PamM`; staging preview `dpl_GjkvcPuutFTgcXZyMZBdyQQK1AA4`. Migration 202609300005 is applied in both environments, and both have the `storage-cleanup` Supabase Cron job (every minute) with Vault secrets.
+
+Verification:
+
+- Local: 77 unit/database tests, browser tests (one pre-existing intermittent spreadsheet-focus case unrelated to this change), lint, type checking and production build.
+- Staging real-delay acceptance: 61 files removed by the scheduler in 32s, including a late upload, and verified 391s after deletion. No browser was open and no manual worker call was made.
+- Staging hosted smoke: all 16 checkpoints passed.
+- Production: the one existing pending task from the 2026-09-30 8:04:13 PM CT purge completed through its queued task at 12:07:01 AM CT, on the first scheduled call after the secret correction. No unfinished tasks remain. No purge was created and nothing was marked complete by hand.
+- Production smoke checks passed, and its synthetic account was removed.
