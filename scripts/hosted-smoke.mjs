@@ -824,7 +824,7 @@ try {
   await cp
     .getByRole("button", { name: "Permanently delete", exact: true })
     .click();
-  await expect(cp.getByText(/1 applications deleted\./).first()).toBeVisible();
+  await expect(cp.getByText(/1 application deleted\./).first()).toBeVisible();
   const operation = ok(
     await admin
       .from("bid_purge_operations")
