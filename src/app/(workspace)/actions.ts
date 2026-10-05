@@ -88,6 +88,89 @@ export async function saveResume(form: FormData) {
       }),
   );
 }
+export async function saveCandidateProfile(form: FormData) {
+  return perform(async () => {
+    const { profile, workspaces } = await getContext();
+    const workspace =
+      profile.role === "admin"
+        ? z.uuid().parse(text(form, "workspace_id"))
+        : workspaces[0]?.id;
+    if (!workspace) throw new Error("Workspace not found");
+    return rpc("save_candidate_profile", {
+      p_id: id(text(form, "id")),
+      p_workspace: workspace,
+      p_identifier: text(form, "identifier"),
+      p_name: text(form, "candidate_name"),
+      p_address: text(form, "address"),
+      p_links: text(form, "links"),
+      p_instructions: text(form, "instructions"),
+    });
+  });
+}
+export async function previewCandidateRetention(profile: string, months: number) {
+  return perform(async () =>
+    (await rpc("candidate_retention_preview", {
+      p_profile: z.uuid().parse(profile),
+      p_months: z.number().int().min(1).max(120).parse(months),
+    })) as { eligible: number; cutoff: string },
+    false,
+  );
+}
+export async function saveCandidateProfileRules(input: {
+  profile: string;
+  companyLimit: number;
+  retentionMonths: number | null;
+  companies: string[];
+  roles: string[];
+  links: string[];
+  confirmedEligible?: number | null;
+}) {
+  return perform(async () =>
+    rpc("update_candidate_profile_rules", {
+      p_profile: z.uuid().parse(input.profile),
+      p_company_limit: z.number().int().min(1).max(1000).parse(input.companyLimit),
+      p_retention_months: input.retentionMonths === null ? null : z.number().int().min(1).max(120).parse(input.retentionMonths),
+      p_companies: z.array(z.string().trim().min(1).max(200)).max(100).parse(input.companies),
+      p_roles: z.array(z.string().trim().min(1).max(200)).max(100).parse(input.roles),
+      p_links: z.array(z.string().trim().min(1).max(200)).max(100).parse(input.links),
+      p_confirm_eligible: input.confirmedEligible ?? null,
+    }),
+  );
+}
+export async function saveResumeAssignment(form: FormData) {
+  return perform(async () => {
+    const rate = moneyToCents(text(form, "rate"));
+    const assignment = await rpc("save_resume_assignment", {
+      p_id: id(text(form, "id")),
+      p_profile: z.uuid().parse(text(form, "profile_id")),
+      p_bidder: z.uuid().parse(text(form, "bidder_id")),
+      p_email: z.email().parse(text(form, "email")),
+      p_phone: z.string().min(1).max(100).parse(text(form, "phone")),
+      p_file: null,
+      p_rate: rate,
+    });
+    return assignment;
+  });
+}
+export async function archiveCandidateProfile(profile: string, archived: boolean) {
+  return perform(async () =>
+    rpc("archive_candidate_profile", {
+      p_profile: z.uuid().parse(profile),
+      p_archived: z.boolean().parse(archived),
+    }),
+  );
+}
+export async function archiveResumeAssignment(
+  assignment: string,
+  archived: boolean,
+) {
+  return perform(async () =>
+    rpc("archive_resume_assignment", {
+      p_id: z.uuid().parse(assignment),
+      p_archived: z.boolean().parse(archived),
+    }),
+  );
+}
 export async function archiveResume(resumeId: string, archived: boolean) {
   return perform(
     async () =>

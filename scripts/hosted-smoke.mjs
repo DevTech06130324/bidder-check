@@ -32,6 +32,38 @@ const options = {
     },
   },
 };
+async function proxySupabase(context) {
+  await context.route(`${url}/**`, async (route) => {
+    const request = route.request();
+    const headers = { ...request.headers() };
+    for (const name of ["host", "content-length", "connection"])
+      delete headers[name];
+    try {
+      const response = await fetch(request.url(), {
+        method: request.method(),
+        headers,
+        body: ["GET", "HEAD"].includes(request.method())
+          ? undefined
+          : request.postDataBuffer(),
+      });
+      const responseHeaders = Object.fromEntries(response.headers.entries());
+      for (const name of [
+        "content-encoding",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+      ])
+        delete responseHeaders[name];
+      await route.fulfill({
+        status: response.status,
+        headers: responseHeaders,
+        body: Buffer.from(await response.arrayBuffer()),
+      });
+    } catch {
+      await route.abort("failed");
+    }
+  });
+}
 const admin = createClient(url, process.env.SUPABASE_SECRET_KEY, options);
 const client = createClient(url, key, options);
 const bidder = createClient(url, key, options);
@@ -43,6 +75,9 @@ const users = [],
   workspaces = [],
   checks = [];
 let browser;
+let retentionCleanupPath;
+let resetCleanupPaths = [];
+let cronHeaders;
 function pass(message) {
   checks.push(message);
   console.log(`PASS ${message}`);
@@ -50,6 +85,57 @@ function pass(message) {
 function ok(result) {
   if (result.error) throw new Error(result.error.message);
   return result.data;
+}
+async function assertStorageMissing(path) {
+  const { data, error } = await admin.storage.from("private-files").download(path);
+  assert.equal(data, null, `Storage object unexpectedly remains: ${path}`);
+  assert.ok(error, `Expected Storage to report missing object: ${path}`);
+  assert.ok(
+    (String(error.statusCode) === "404" || error.status === 404) &&
+      /object not found|not found|no such object/i.test(error.message),
+    `Expected a Storage 404 for ${path}, received ${error.statusCode ?? error.status ?? "no status"}: ${error.message}`,
+  );
+}
+async function waitForCleanupComplete(paths, timeoutMs = 7 * 60_000) {
+  const initialTasks = ok(
+    await admin
+      .from("storage_cleanup_tasks")
+      .select("id,storage_path,completed_at")
+      .in("storage_path", paths),
+  );
+  assert.equal(initialTasks.length, paths.length, "Every reset file must have a cleanup task");
+  const taskIds = initialTasks.map((task) => task.id);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tasks = ok(
+      await admin
+        .from("storage_cleanup_tasks")
+        .select("id,completed_at,next_attempt_at,last_error")
+        .in("id", taskIds),
+    );
+    assert.equal(tasks.length, taskIds.length, "A cleanup verification task disappeared");
+    if (tasks.every((task) => task.completed_at)) return;
+    const response = await fetch(`${origin}/api/cron/storage-cleanup`, {
+      headers: cronHeaders,
+    });
+    assert.equal(response.status, 200);
+    const nextAttempt = Math.min(
+      ...tasks
+        .filter((task) => !task.completed_at)
+        .map((task) => new Date(task.next_attempt_at).getTime()),
+    );
+    const remaining = Math.max(1000, nextAttempt - Date.now() + 1000);
+    if (remaining > 1000)
+      await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 15_000)));
+  }
+  const pending = ok(
+      await admin
+        .from("storage_cleanup_tasks")
+      .select("id,next_attempt_at,last_error")
+      .in("id", taskIds)
+      .is("completed_at", null),
+  );
+  assert.fail(`Storage cleanup did not complete before timeout: ${JSON.stringify(pending)}`);
 }
 async function seedClient(label) {
   const email = `${prefix}-${label}@example.com`;
@@ -92,6 +178,11 @@ try {
   const clientContext = await browser.newContext();
   const bidderContext = await browser.newContext();
   const adminContext = await browser.newContext();
+  await Promise.all([
+    proxySupabase(clientContext),
+    proxySupabase(bidderContext),
+    proxySupabase(adminContext),
+  ]);
   if (process.env.SMOKE_VERCEL_BYPASS) {
     for (const context of [clientContext, bidderContext, adminContext]) {
       await context.route(`${origin}/**`, (route) =>
@@ -110,6 +201,12 @@ try {
       .from("profiles")
       .update({ role: "admin", approval_status: "approved" })
       .eq("id", adminAccount.id),
+  );
+  assert.equal(
+    ok(
+      await admin.from("profiles").select("role").eq("id", adminAccount.id).single(),
+    ).role,
+    "admin",
   );
   ok(
     await administrator.auth.signInWithPassword({
@@ -356,33 +453,37 @@ try {
     "Client creates bidder without email; 123456 signs in; Settings password change disables old password",
   );
 
-  await cp.goto(`${origin}/resumes`);
-  await cp
-    .getByRole("button", { name: "New resume", exact: true })
-    .first()
-    .click();
-  await cp.getByLabel("Resume identifier", { exact: true }).fill("SMOKE-01");
-  await cp
-    .getByLabel("Candidate name", { exact: true })
-    .fill("Smoke Candidate");
-  await cp
-    .getByLabel("Email address", { exact: true })
-    .fill("candidate@example.com");
-  await cp
-    .getByLabel("Rate override per bid (USD)", { exact: true })
-    .fill("2.50");
-  await cp.getByRole("button", { name: "Create profile", exact: true }).click();
+  await cp.goto(`${origin}/profiles`);
+  await cp.getByRole("button", { name: "New candidate profile", exact: true }).click();
+  await cp.getByLabel("Profile ID", { exact: true }).fill("SMOKE-01");
+  await cp.getByLabel("Candidate name", { exact: true }).fill("Smoke Candidate");
+  await cp.getByLabel("Postal address", { exact: true }).fill("Chicago, IL");
+  await cp.getByLabel("Professional links", { exact: true }).fill("https://portfolio.example.com");
+  await cp.getByLabel("Application instructions", { exact: true }).fill("Shared profile details");
+  await cp.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
-    cp.getByText("Resume profile saved", { exact: true }),
+    cp.getByText("Candidate profile saved", { exact: true }),
   ).toBeVisible();
+  await cp.goto(`${origin}/resumes`);
+  await cp.getByRole("button", { name: "Assign profile", exact: true }).click();
+  await cp.getByLabel("Assigned bidder", { exact: true }).selectOption(invited.id);
+  const sharedProfile = ok(
+    await client.from("candidate_profiles").select("id").eq("identifier", "SMOKE-01").single(),
+  );
+  await cp.getByLabel("Candidate profile", { exact: true }).selectOption(sharedProfile.id);
+  await cp.getByLabel("Email address", { exact: true }).fill("candidate@example.com");
+  await cp.getByLabel("Phone number", { exact: true }).fill("312-555-0101");
+  await cp.getByLabel("Rate override per bid (USD)", { exact: true }).fill("2.50");
+  await cp.getByRole("button", { name: "Save assignment", exact: true }).click();
+  await expect(cp.getByText("Bidder assignment saved", { exact: true })).toBeVisible();
   const resume = ok(
     await client
       .from("resumes")
       .select("*")
-      .eq("identifier", "SMOKE-01")
+      .eq("profile_id", sharedProfile.id)
+      .eq("bidder_id", invited.id)
       .single(),
   );
-  await cp.getByRole("button", { name: /SMOKE-01/ }).click();
   const pdf = await cp.pdf({ format: "A4" });
   await cp.getByLabel("Choose resume file", { exact: true }).setInputFiles({
     name: "resume.pdf",
@@ -393,7 +494,7 @@ try {
     timeout: 45000,
   });
   await bp.goto(`${origin}/resumes`);
-  await bp.getByRole("button", { name: /SMOKE-01/ }).click();
+  await bp.getByRole("button", { name: /Smoke Candidate/ }).click();
   await expect(bp.getByRole("button", { name: "Edit profile" })).toHaveCount(0);
   await bp.getByRole("button", { name: "Open resume", exact: true }).click();
   const signed = await bp
@@ -542,7 +643,7 @@ try {
       p_identifier: "SMOKE-01",
       p_name: "Smoke Candidate",
       p_email: "candidate@example.com",
-      p_phone: "",
+      p_phone: "312-555-0101",
       p_address: "",
       p_links: "",
       p_instructions: "",
@@ -657,9 +758,9 @@ try {
   await bp.getByRole("button", { name: "Read columns" }).click();
   await bp.getByRole("button", { name: "Preview bids" }).click();
   await expect(
-    bp.getByRole("button", { name: "Import 2 bids", exact: true }),
+    bp.getByRole("button", { name: "Import 2 allowed bids", exact: true }),
   ).toBeEnabled({ timeout: 30000 });
-  await bp.getByRole("button", { name: "Import 2 bids", exact: true }).click();
+  await bp.getByRole("button", { name: "Import 2 allowed bids", exact: true }).click();
   await expect(bp.getByText("2 bids imported", { exact: true })).toBeVisible({
     timeout: 45000,
   });
@@ -704,6 +805,26 @@ try {
   );
   assert.equal(races.filter((r) => ok(r).ok).length, 1);
   assert.equal(races.filter((r) => ok(r).conflict).length, 1);
+  current = await readBid(one.id);
+  const mixedEdits = await Promise.all([
+    bidder.rpc("update_bid_cell", {
+      p_bid: one.id,
+      p_field: "source",
+      p_value: "Mixed cell edit",
+      p_version: current.version,
+    }),
+    bidder.rpc("save_bid", {
+      p_id: one.id,
+      p_resume: current.resume_id,
+      p_company: current.company,
+      p_role: current.role_name,
+      p_url: current.url,
+      p_source: current.source,
+      p_arrangement: current.arrangement,
+      p_status: current.job_status,
+    }),
+  ]);
+  assert.equal(mixedEdits.filter((result) => !result.error).length, 2);
   const payload = {
     p_resume: resume.id,
     p_date: "2026-11-01",
@@ -855,7 +976,7 @@ try {
     0,
   );
   for (const path of purgePaths)
-    assert.ok((await admin.storage.from("private-files").download(path)).error);
+  await assertStorageMissing(path);
   assert.equal(
     ok(await client.rpc("bid_purge_status", { p_operation: operation.id }))
       .verifyingFiles,
@@ -874,7 +995,7 @@ try {
       .eq("operation_id", operation.id),
   );
   assert.ok(process.env.CRON_SECRET, "Staging CRON_SECRET required");
-  const cronHeaders = {
+  cronHeaders = {
     authorization: `Bearer ${process.env.CRON_SECRET}`,
     ...(process.env.SMOKE_VERCEL_BYPASS
       ? { "x-vercel-protection-bypass": process.env.SMOKE_VERCEL_BYPASS }
@@ -894,7 +1015,7 @@ try {
     )
     .toBe(0);
   for (const path of purgePaths)
-    assert.ok((await admin.storage.from("private-files").download(path)).error);
+  await assertStorageMissing(path);
   assert.equal(
     ok(await admin.from("resumes").select("id").eq("id", resume.id)).length,
     1,
@@ -964,8 +1085,192 @@ try {
   pass(
     "Earnings render correctly; archiving revokes database, storage, and app access while retaining history",
   );
+
+  const retainedBid = await readBid(bid.id);
+  assert.equal(retainedBid.applied, true);
+  const latestScreenshot = ok(
+    await admin
+      .from("files")
+      .select("storage_path")
+      .eq("id", retainedBid.evidence_file_id)
+      .single(),
+  );
+  retentionCleanupPath = latestScreenshot.storage_path;
+  ok(
+    await client.rpc("update_candidate_profile_rules", {
+      p_profile: resume.profile_id,
+      p_company_limit: 3,
+      p_retention_months: 1,
+      p_companies: [],
+      p_roles: [],
+      p_links: [],
+      p_confirm_eligible: null,
+    }),
+  );
+  ok(
+    await admin
+      .from("bids")
+      .update({ applied_at: "2026-07-01T12:00:00.000Z" })
+      .eq("id", bid.id),
+  );
+  const retention = ok(
+    await admin.rpc("process_candidate_retention", { p_limit: 10 }),
+  );
+  assert.equal(retention.deletedApplications, 1);
+  assert.equal(
+    ok(await admin.from("bids").select("id").eq("id", bid.id)).length,
+    0,
+  );
+  const retainedTotals = ok(
+    await admin
+      .from("retained_bid_daily_aggregates")
+      .select("metric,record_count,earned_cents")
+      .eq("profile_id", resume.profile_id)
+      .eq("bidder_id", invited.id),
+  );
+  assert.equal(
+    retainedTotals.find((entry) => entry.metric === "found")?.record_count,
+    1,
+  );
+  assert.equal(
+    retainedTotals.find((entry) => entry.metric === "applied_activity")
+      ?.record_count,
+    1,
+  );
+  assert.equal(
+    retainedTotals.find((entry) => entry.metric === "earning")?.earned_cents,
+    250,
+  );
+  assert.equal(
+    ok(await admin.from("resumes").select("id").eq("id", resume.id)).length,
+    1,
+  );
+  const cleanupResponse = await fetch(`${origin}/api/cron/storage-cleanup`, {
+    headers: cronHeaders,
+  });
+  assert.equal(cleanupResponse.status, 200);
+  await assertStorageMissing(latestScreenshot.storage_path);
+  pass(
+    "Retention permanently removes expired application detail, preserves daily counts and one earning, and cleans only its screenshot",
+  );
+  const resetWorkspace = workspaces[0];
+  resetCleanupPaths = ok(
+    await admin
+      .from("files")
+      .select("storage_path")
+      .eq("workspace_id", resetWorkspace),
+  ).map((entry) => entry.storage_path);
+  assert.ok(resetCleanupPaths.length > 0);
+  for (const path of resetCleanupPaths) {
+    const { data, error } = await admin.storage.from("private-files").download(path);
+    assert.equal(error, null, `Reset test file must exist before reset: ${path}`);
+    assert.ok(data, `Reset test file must download before reset: ${path}`);
+  }
+  const preflight = ok(
+    await admin.rpc("application_library_inventory", {
+      p_workspaces: [resetWorkspace],
+    }),
+  );
+  assert.ok(preflight.assignmentCount > 0);
+  assert.ok(preflight.fileCount > 0);
+  assert.ok(preflight.eventCount > 0);
+  ok(await admin.rpc("set_application_library_cutover", { p_active: true }));
+  try {
+    const gateTarget = ok(
+      await admin
+        .from("bids")
+        .select("id,version,source")
+        .eq("workspace_id", resetWorkspace)
+        .limit(1)
+        .single(),
+    );
+    const blockedWrite = await bidder.rpc("update_bid_cell", {
+      p_bid: gateTarget.id,
+      p_field: "source",
+      p_value: `${gateTarget.source} paused-check`,
+      p_version: gateTarget.version,
+    });
+    assert.match(blockedWrite.error?.message ?? "", /temporarily paused/i);
+
+    const resetResult = ok(
+      await admin.rpc("reset_application_library", {
+        p_workspaces: [resetWorkspace],
+        p_expected_fingerprint: preflight.fingerprint,
+        p_actor: adminAccount.id,
+      }),
+    );
+    assert.equal(resetResult.deleted, true);
+    assert.equal(resetResult.assignmentCount, preflight.assignmentCount);
+    assert.equal(resetResult.bidCount, preflight.bidCount);
+    assert.equal(
+      ok(await admin.from("workspaces").select("id").eq("id", resetWorkspace)).length,
+      1,
+    );
+    assert.equal(
+      ok(await admin.from("profiles").select("id").eq("id", owner.id)).length,
+      1,
+    );
+    assert.equal(
+      ok(await admin.from("bidders").select("user_id").eq("user_id", invited.id)).length,
+      1,
+    );
+    for (const table of ["candidate_profiles", "resumes", "bids", "files", "retained_bid_daily_aggregates"]) {
+      assert.equal(
+        ok(
+          await admin
+            .from(table)
+            .select(table === "retained_bid_daily_aggregates" ? "report_day" : "id")
+            .eq("workspace_id", resetWorkspace),
+        ).length,
+        0,
+        `Reset should leave no ${table} in its selected workspace`,
+      );
+    }
+  } finally {
+    ok(await admin.rpc("set_application_library_cutover", { p_active: false }));
+  }
+  await waitForCleanupComplete(resetCleanupPaths);
+  for (const path of resetCleanupPaths) await assertStorageMissing(path);
+  assert.equal(
+    ok(
+      await admin
+        .from("application_library_reset_audits")
+        .select("id")
+        .eq("actor_id", adminAccount.id),
+    ).length,
+    1,
+  );
+  pass(
+    "Scoped reset preserves client/bidder/workspace accounts, queues every resume and screenshot, removes profile/application history, and completes delayed Storage verification",
+  );
 } finally {
   await browser?.close();
+  if (resetCleanupPaths.length) {
+    ok(await admin.storage.from("private-files").remove(resetCleanupPaths));
+    ok(
+      await admin
+        .from("storage_cleanup_tasks")
+        .delete()
+        .in("storage_path", resetCleanupPaths),
+    );
+  }
+  if (users.length) {
+    ok(
+      await admin
+        .from("application_library_reset_audits")
+        .delete()
+        .in("actor_id", users),
+    );
+  }
+  if (retentionCleanupPath) {
+    ok(await admin.storage.from("private-files").remove([retentionCleanupPath]));
+    ok(
+      await admin
+        .from("storage_cleanup_tasks")
+        .delete()
+        .eq("storage_path", retentionCleanupPath),
+    );
+  }
   // Remove only this run's synthetic staging records; never touch other workspaces.
   // Discover records even if the browser failed before a create response arrived.
   const ownProfiles = ok(

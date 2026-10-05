@@ -9,8 +9,24 @@ const bidder = "00000000-0000-4000-8000-000000000003";
 let workspace: string, resume: string, bid: string, file: string;
 async function asUser(id: string) {
   await db.exec(
-    `reset role; set role authenticated; select set_config('request.jwt.claim.sub','${id}',false);`,
+    `reset role; set role authenticated; select set_config('request.jwt.claim.sub','${id}',false); select set_config('request.jwt.claim.role','authenticated',false);`,
   );
+}
+async function finalizeResumeFile(resumeId: string, actor = client): Promise<string> {
+  await asUser(actor);
+  const upload = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('resume',$1,'resume.pdf','application/pdf',100) id",
+      [resumeId],
+    )
+  ).rows[0].id;
+  await db.exec("reset role; set role service_role");
+  await db.query("select public.finalize_verified_file($1,$2,$3)", [
+    upload,
+    "b".repeat(64),
+    actor,
+  ]);
+  return upload;
 }
 beforeAll(async () => {
   db = new PGlite();
@@ -18,6 +34,7 @@ beforeAll(async () => {
  create schema auth; create schema storage;
  create table auth.users(id uuid primary key, email text, raw_user_meta_data jsonb default '{}', raw_app_meta_data jsonb default '{}', email_confirmed_at timestamptz);
  create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+ create function auth.role() returns text language sql stable as $$ select nullif(current_setting('request.jwt.claim.role',true),'') $$;
  create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
  create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text,metadata jsonb);
  alter table storage.objects enable row level security;
@@ -56,12 +73,30 @@ beforeAll(async () => {
     [bidder],
   );
   await asUser(client);
-  resume = (
+  const profileId = (
     await db.query<{ id: string }>(
-      "select public.save_resume(null,$1,$2,'ENG-01','Jordan','jordan@test.com','','','','Instructions',null) as id",
-      [workspace, bidder],
+      "select public.save_candidate_profile(null,$1,'ENG-01','Jordan','','','Instructions') id",
+      [workspace],
     )
   ).rows[0].id;
+  resume = (
+    await db.query<{ id: string }>(
+      "select public.save_resume_assignment(null,$1,$2,'jordan@test.com','555-1000',null,null) as id",
+      [profileId, bidder],
+    )
+  ).rows[0].id;
+  const resumeUpload = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('resume',$1,'resume.pdf','application/pdf',100) id",
+      [resume],
+    )
+  ).rows[0].id;
+  await db.exec("reset role; set role service_role");
+  await db.query("select public.finalize_verified_file($1,$2,$3)", [
+    resumeUpload,
+    "b".repeat(64),
+    client,
+  ]);
   await asUser(bidder);
   bid = (
     await db.query<{ id: string }>(
@@ -193,6 +228,57 @@ it("normalizes equivalent raw-RPC URLs before enforcing uniqueness", async () =>
       ),
     ).rejects.toThrow();
   }
+});
+it("enforces profile-wide company limits and literal restrictions", async () => {
+  await asUser(client);
+  const profileId = (
+    await db.query<{ id: string }>(
+      "select public.save_candidate_profile(null,$1,'LIMIT-01','Limit Candidate','','','') id",
+      [workspace],
+    )
+  ).rows[0].id;
+  const assignment = (
+    await db.query<{ id: string }>(
+      "select public.save_resume_assignment(null,$1,$2,'limit@test.com','555-1111',null,null) id",
+      [profileId, bidder],
+    )
+  ).rows[0].id;
+  await finalizeResumeFile(assignment);
+  await asUser(client);
+  await db.query(
+    "select public.update_candidate_profile_rules($1,1,3,array['Acme'],array['Staff Engineer'],array['blocked.example'])",
+    [profileId],
+  );
+  await asUser(bidder);
+  await db.query(
+    "select public.save_bid(null,$1,'Northwind','Engineer','https://northwind.test/job/1','LinkedIn','remote','open')",
+    [assignment],
+  );
+  await expect(
+    db.query(
+      "select public.save_bid(null,$1,'Northwind','Designer','https://northwind.test/job/2','LinkedIn','remote','open')",
+      [assignment],
+    ),
+  ).rejects.toThrow(/company limit/i);
+  await expect(
+    db.query(
+      "select public.save_bid(null,$1,'Acme Laboratories','Engineer','https://acme.test/job/3','LinkedIn','remote','open')",
+      [assignment],
+    ),
+  ).rejects.toThrow(/restricted company/i);
+  const previewErrors = (
+    await db.query<{ errors: { row: number; code: string }[] }>(
+      "select public.validate_bid_import($1,'2026-03-08',$2::jsonb) errors",
+      [assignment, JSON.stringify([
+        { company: "Acme Industries", role_name: "Engineer", url: "https://acme.test/1", source: "", arrangement: "remote", job_status: "open" },
+        { company: "Blue", role_name: "Engineer", url: "https://blue.test/1", source: "", arrangement: "remote", job_status: "open" },
+        { company: "Blue", role_name: "Designer", url: "https://blue.test/2", source: "", arrangement: "remote", job_status: "open" },
+      ])],
+    )
+  ).rows[0].errors;
+  expect(previewErrors.map((issue) => issue.row)).toEqual([1, 3]);
+  await db.exec("reset role");
+  await db.exec(`delete from public.bid_events where bid_id in (select id from public.bids where resume_id='${assignment}'); delete from public.bids where resume_id='${assignment}'; update public.resumes set file_id=null where id='${assignment}'; delete from public.files where resume_id='${assignment}'; delete from public.resumes where id='${assignment}'; delete from public.candidate_profiles where id='${profileId}';`);
 });
 it("verified uploads apply atomically, replace proof, reject corrected content and preserve earnings", async () => {
   await asUser(bidder);
@@ -332,16 +418,18 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
   await asUser(client);
   const r = (
     await db.query<{ id: string }>(
-      "select public.save_resume(null,$1,$2,'PEER-01','Peer','','','','','',null) id",
+      "select public.save_resume(null,$1,$2,'PEER-01','Peer','peer1@test.com','555-2001','','','',null) id",
       [workspace, peer],
     )
   ).rows[0].id;
   const r2 = (
     await db.query<{ id: string }>(
-      "select public.save_resume(null,$1,$2,'PEER-02','Peer','','','','','',0) id",
+      "select public.save_resume(null,$1,$2,'PEER-02','Peer','peer2@test.com','555-2002','','','',0) id",
       [workspace, peer],
     )
   ).rows[0].id;
+  await finalizeResumeFile(r);
+  await finalizeResumeFile(r2);
   await asUser(peer);
   expect(
     (await db.query("select * from public.bids where id=$1", [bid])).rows,
@@ -374,7 +462,7 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
   ).rejects.toThrow("configure a bid rate");
   await asUser(client);
   await db.query(
-    "select public.save_resume($1,$2,$3,'PEER-01','Peer','','','','','',0)",
+    "select public.save_resume($1,$2,$3,'PEER-01','Peer','peer1@test.com','555-2001','','','',0)",
     [r, workspace, peer],
   );
   await db.exec("reset role;set role service_role");
@@ -731,10 +819,11 @@ it("imports atomically with receipts and version-checks individual cells", async
   await asUser(client);
   const rid = (
     await db.query<{ id: string }>(
-      "select public.save_resume(null,$1,$2,'SHEET-01','Jordan','jordan@test.com','','','','Instructions',null) id",
+      "select public.save_resume(null,$1,$2,'SHEET-01','Jordan','jordan@test.com','555-1001','','','Instructions',null) id",
       [workspace, bidder],
     )
   ).rows[0].id;
+  await finalizeResumeFile(rid);
   await asUser(bidder);
   const rows = [
     {
@@ -1067,8 +1156,8 @@ it("purge rejects expired/changed snapshots, isolates scope and cleans unfinishe
   const make = async (suffix: string) =>
     (
       await db.query<{ id: string }>(
-        "select public.save_bid(null,$1,'Purge','Engineer',$2,'','remote','open') id",
-        [resume, `https://example.com/purge/${suffix}`],
+        "select public.save_bid(null,$1,$3,'Engineer',$2,'','remote','open') id",
+        [resume, `https://example.com/purge/${suffix}`, `Purge ${suffix}`],
       )
     ).rows[0].id;
   const one = await make("one"),
@@ -1433,4 +1522,271 @@ it("lets a second worker reclaim a task only after the first worker's lease expi
       )
     ).rows[0].first_removed_at,
   ).toBeNull();
+});
+
+it("shares candidate profile details but keeps each bidder assignment private", async () => {
+  await asUser(client);
+  const profile = (
+    await db.query<{ id: string }>(
+      "select public.save_candidate_profile(null,$1,'SHARED-01','Shared Candidate','Chicago, IL','https://portfolio.test','Use the shared experience') id",
+      [workspace],
+    )
+  ).rows[0].id;
+  const firstAssignment = (
+    await db.query<{ id: string }>(
+      "select public.save_resume_assignment(null,$1,$2,'first@test.com','555-0101',null,100) id",
+      [profile, bidder],
+    )
+  ).rows[0].id;
+  const peer = "00000000-0000-4000-8000-000000000004";
+  const secondAssignment = (
+    await db.query<{ id: string }>(
+      "select public.save_resume_assignment(null,$1,$2,'second@test.com','555-0102',null,200) id",
+      [profile, peer],
+    )
+  ).rows[0].id;
+  await finalizeResumeFile(firstAssignment);
+  await finalizeResumeFile(secondAssignment);
+
+  await asUser(client);
+  const unrelatedProfile = (
+    await db.query<{ id: string }>(
+      "select public.save_candidate_profile(null,$1,'SHARED-02','Other Candidate','','','') id",
+      [workspace],
+    )
+  ).rows[0].id;
+  const unrelatedAssignment = (
+    await db.query<{ id: string }>(
+      "select public.save_resume_assignment(null,$1,$2,'other@test.com','555-0103',null,null) id",
+      [unrelatedProfile, bidder],
+    )
+  ).rows[0].id;
+  const unrelatedPdf = await finalizeResumeFile(unrelatedAssignment);
+  await asUser(client);
+  await expect(
+    db.query(
+      "select public.save_resume_assignment($1,$2,$3,'first@test.com','555-0101',$4,100)",
+      [firstAssignment, profile, bidder, unrelatedPdf],
+    ),
+  ).rejects.toThrow(/PDF|verified/i);
+
+  await asUser(bidder);
+  await db.query(
+    "select public.save_bid(null,$1,'Shared Co','Engineer','https://shared.test/job/1','LinkedIn','remote','open')",
+    [firstAssignment],
+  );
+  expect(
+    (
+      await db.query("select id from public.candidate_profiles where id=$1", [
+        profile,
+      ])
+    ).rows,
+  ).toHaveLength(1);
+  expect(
+    (
+      await db.query("select id from public.resumes where id=$1", [
+        firstAssignment,
+      ])
+    ).rows,
+  ).toHaveLength(1);
+  expect(
+    (
+      await db.query("select id from public.resumes where id=$1", [
+        secondAssignment,
+      ])
+    ).rows,
+  ).toHaveLength(0);
+  await asUser(peer);
+  await expect(
+    db.query(
+      "select public.save_bid(null,$1,' shared   co ','engineer','https://shared.test/job/2','LinkedIn','remote','open')",
+      [secondAssignment],
+    ),
+  ).rejects.toThrow(/already has an application/i);
+});
+
+it("aggregates CT reporting before retention and queues screenshot cleanup", async () => {
+  await asUser(client);
+  const profileId = (
+    await db.query<{ id: string }>(
+      "select public.save_candidate_profile(null,$1,'RET-01','Retention Candidate','','','') id",
+      [workspace],
+    )
+  ).rows[0].id;
+  const assignmentId = (
+    await db.query<{ id: string }>(
+      "select public.save_resume_assignment(null,$1,$2,'retention@test.com','555-0199',null,250) id",
+      [profileId, bidder],
+    )
+  ).rows[0].id;
+  await finalizeResumeFile(assignmentId);
+  await asUser(bidder);
+  const retentionBid = (
+    await db.query<{ id: string }>(
+      "select public.save_bid(null,$1,'Retention Co','Engineer','https://retention.test/old','LinkedIn','remote','open') id",
+      [assignmentId],
+    )
+  ).rows[0].id;
+  const proof = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) id",
+      [retentionBid],
+    )
+  ).rows[0].id;
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  await db.query("select public.finalize_verified_file($1,$2,$3)", [proof, "e".repeat(64), bidder]);
+  await db.exec("reset role");
+  await db.query(
+    "update public.bids set found_at=clock_timestamp()-interval '5 months', applied_at=clock_timestamp()-interval '4 months', first_applied_at=clock_timestamp()-interval '4 months' where id=$1",
+    [retentionBid],
+  );
+  await asUser(client);
+  const preview = (
+    await db.query<{ result: { eligible: number } }>(
+      "select public.candidate_retention_preview($1,1) result",
+      [profileId],
+    )
+  ).rows[0].result;
+  expect(preview.eligible).toBe(1);
+  await expect(
+    db.query("select public.update_candidate_profile_rules($1,3,1,'{}','{}','{}')", [profileId]),
+  ).rejects.toThrow(/affects 1 applied bids/i);
+  await db.query(
+    "select public.update_candidate_profile_rules($1,3,1,'{}','{}','{}',1)",
+    [profileId],
+  );
+  await db.exec("set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  const result = (
+    await db.query<{ result: { deletedApplications: number; storageTasksQueued: number } }>(
+      "select public.process_candidate_retention(10) result",
+    )
+  ).rows[0].result;
+  expect(result).toEqual({ deletedApplications: 1, storageTasksQueued: 1, limit: 10 });
+  await db.exec("reset role");
+  expect((await db.query("select id from public.bids where id=$1", [retentionBid])).rows).toHaveLength(0);
+  const history = (
+    await db.query<{ metric: string; record_count: number; earned_cents: number }>(
+      "select metric,record_count,earned_cents from public.retained_bid_daily_aggregates where profile_id=$1 order by metric",
+      [profileId],
+    )
+  ).rows;
+  expect(history.map((row) => row.metric)).toEqual(["applied_activity", "earning", "found"]);
+  expect(history.find((row) => row.metric === "earning")?.earned_cents).toBe(250);
+  expect((await db.query("select id from public.files where id=$1", [proof])).rows).toHaveLength(0);
+  expect((await db.query("select id from public.files where resume_id=$1", [assignmentId])).rows).toHaveLength(1);
+  expect((await db.query("select id from public.storage_cleanup_tasks where operation_id is null and storage_path is not null")).rows).toHaveLength(1);
+});
+it("subtracts retention as CT calendar months across month-end and daylight saving", async () => {
+  const monthEnd = (
+    await db.query<{ cutoff: Date }>(
+      "select public.candidate_retention_cutoff('2026-05-31 17:00:00+00',3) cutoff",
+    )
+  ).rows[0].cutoff;
+  expect(new Date(monthEnd).toISOString()).toBe("2026-02-28T18:00:00.000Z");
+  const dst = (
+    await db.query<{ cutoff: Date }>(
+      "select public.candidate_retention_cutoff('2026-03-15 08:30:00+00',1) cutoff",
+    )
+  ).rows[0].cutoff;
+  expect(new Date(dst).toISOString()).toBe("2026-02-15T09:30:00.000Z");
+});
+
+it("resets only an explicitly inventoried application library and preserves accounts", async () => {
+  const adminId = "00000000-0000-4000-8000-000000000006";
+  await db.exec("reset role");
+  await db.query("insert into auth.users(id,email) values($1,'reset-admin@test.com')", [adminId]);
+  await db.exec("set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  await db.query("update public.profiles set role='admin',approval_status='approved' where id=$1", [adminId]);
+  const filePaths = (
+    await db.query<{ storage_path: string }>(
+      "select storage_path from public.files where workspace_id=$1",
+      [workspace],
+    )
+  ).rows.map((row) => row.storage_path);
+  const importRequest = "00000000-0000-4000-8000-000000000099";
+  await db.query(
+    "insert into public.bid_import_receipts(actor_id,request_id,payload_hash,result) values($1,$2,$3,$4::jsonb)",
+    [client, importRequest, "f".repeat(64), JSON.stringify({ ids: [bid], resume, bidder })],
+  );
+  const purge = "00000000-0000-4000-8000-000000000098";
+  await db.query(
+    "insert into public.bid_purge_operations(id,actor_id,scope,bidder_id,targets,count) values($1,$2,'Selected trashed bids',$3,$4::jsonb,1)",
+    [purge, client, bidder, JSON.stringify([{ id: bid, version: 1 }])],
+  );
+  const inventory = (
+    await db.query<{ result: { fingerprint: string; bidCount: number; fileCount: number; assignmentCount: number } }>(
+      "select public.application_library_inventory(array[$1::uuid]) result",
+      [workspace],
+    )
+  ).rows[0].result;
+  expect(inventory.bidCount).toBeGreaterThan(0);
+  expect(inventory.assignmentCount).toBeGreaterThan(0);
+  expect(inventory.fileCount).toBeGreaterThan(0);
+  await db.query(
+    "update public.candidate_profiles set instructions='changed after inventory' where id=(select profile_id from public.resumes where id=$1)",
+    [resume],
+  );
+  await expect(
+    db.query("select public.reset_application_library(array[$1::uuid],$2,$3)", [workspace, inventory.fingerprint, adminId]),
+  ).rejects.toThrow(/changed after inventory/i);
+  const confirmedInventory = (
+    await db.query<{ result: { fingerprint: string } }>(
+      "select public.application_library_inventory(array[$1::uuid]) result",
+      [workspace],
+    )
+  ).rows[0].result;
+  await db.query("select public.set_application_library_cutover(true)");
+  await asUser(bidder);
+  const gateBid = (
+    await db.query<{ version: number }>("select version from public.bids where id=$1", [bid])
+  ).rows[0];
+  await expect(
+    db.query("select public.update_bid_cell($1,'source','paused-check',$2)", [bid, gateBid.version]),
+  ).rejects.toThrow(/temporarily paused/i);
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  const reset = (
+    await db.query<{ result: { deleted: boolean; storageTasksQueued: number } }>(
+      "select public.reset_application_library(array[$1::uuid],$2,$3) result",
+      [workspace, confirmedInventory.fingerprint, adminId],
+    )
+  ).rows[0].result;
+  expect(reset.deleted).toBe(true);
+  expect(reset.storageTasksQueued).toBeGreaterThan(0);
+  expect((await db.query("select id from public.workspaces where id=$1", [workspace])).rows).toHaveLength(1);
+  expect((await db.query("select user_id from public.bidders where user_id=$1", [bidder])).rows).toHaveLength(1);
+  expect((await db.query("select id from public.profiles where id in ($1,$2,$3)", [client, bidder, adminId])).rows).toHaveLength(3);
+  for (const table of ["candidate_profiles", "resumes", "bids", "files", "retained_bid_daily_aggregates"]) {
+    expect((await db.query(`select 1 from public.${table} where workspace_id=$1 limit 1`, [workspace])).rows).toHaveLength(0);
+  }
+  expect((await db.query("select 1 from public.bid_events limit 1")).rows).toHaveLength(0);
+  for (const path of filePaths) {
+    expect(
+      (await db.query("select id from public.storage_cleanup_tasks where storage_path=$1", [path])).rows,
+    ).not.toHaveLength(0);
+  }
+  const receipt = (
+    await db.query<{ payload_hash: string; result: { ids: unknown[]; reset: boolean } }>(
+      "select payload_hash,result from public.bid_import_receipts where actor_id=$1 and request_id=$2",
+      [client, importRequest],
+    )
+  ).rows[0];
+  expect(receipt.payload_hash).toBe("f".repeat(64));
+  expect(receipt.result).toEqual({ ids: [], reset: true });
+  expect(
+    (
+      await db.query<{ targets: unknown[]; bidder_id: string | null; count: number }>(
+        "select targets,bidder_id,count from public.bid_purge_operations where id=$1",
+        [purge],
+      )
+    ).rows[0],
+  ).toEqual({ targets: [], bidder_id: null, count: 1 });
+  const audit = (
+    await db.query<{ bid_count: number; file_count: number }>(
+      "select bid_count,file_count from public.application_library_reset_audits where actor_id=$1",
+      [adminId],
+    )
+  ).rows[0];
+  expect(audit.bid_count).toBe(inventory.bidCount);
+  expect(audit.file_count).toBe(inventory.fileCount);
+  await db.query("select public.set_application_library_cutover(false)");
 });

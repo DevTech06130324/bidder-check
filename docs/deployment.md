@@ -1,5 +1,27 @@
 # Deployment handoff
 
+## Admin visibility fix — 2026-10-01
+
+The Users hierarchy previously rendered only client-owned groups, hiding bidders
+whose workspace owner is an admin (for example, after promoting a client).
+Production investigation confirmed one such bidder, with a valid membership.
+Users now includes a searchable **Bidders without a client** section in the admin
+Active/Archived views, using the existing detail links and management actions.
+No migration, reassignment, or permission change is required.
+
+Verification: the browser regression failed before the fix and passed afterward;
+77 unit/database tests, 44 desktop/mobile browser tests, lint, type checking, and
+the production build passed. Preview `dpl_2jHuMLsf58SvDquhPYnsSW1aVMYH` passed the
+targeted hosted check for finding, editing rates, and opening the bidder profile.
+`scripts/people-visibility-smoke.mjs` creates and removes only synthetic staging
+accounts and refuses to run against production.
+
+Production deployment `dpl_7iwTycA81doPV3QKL6mqPSmRXgwq` is READY at
+https://bidder-check.vercel.app. A temporary admin session confirmed that the
+previously hidden bidder appears, is searchable, and opens both the management
+dialog and detail page. No production account data was edited; that verification
+session was signed out afterward. This release was deployed from the working tree.
+
 Production is deployed at https://bidder-check.vercel.app and isolated Preview at https://bidder-check-staging.vercel.app. Production uses Supabase `aizorlyfggwbewetnwqm`; staging uses `kdmvludtvhuuewmhurpw`. Both have the application schema and private Storage. The designated account `david.chan.mdev@gmail.com` has been assigned the admin role.
 
 The direct-account onboarding update is live. It replaces emailed bidder invitations with manager-created accounts (initial password `123456`), supports password changes in Settings, and signs clients in immediately after registration. SMTP is outside the revised scope. Production and staging have migrations 001–003, with all eight tables under RLS and a private file bucket.
@@ -93,3 +115,27 @@ Verification:
 - Staging hosted smoke: all 16 checkpoints passed.
 - Production: the one existing pending task from the 2026-09-30 8:04:13 PM CT purge completed through its queued task at 12:07:01 AM CT, on the first scheduled call after the secret correction. No unfinished tasks remain. No purge was created and nothing was marked complete by hand.
 - Production smoke checks passed, and its synthetic account was removed.
+
+## Shared profiles, bid restrictions, retention, and legacy-library reset
+
+Migrations `202610040001`–`202610040009` add shared candidate profiles, bidder-specific resume assignments, profile-wide bid restrictions and retention aggregates, a checked reset inventory, and a temporary write gate for the cutover. Keep `.env.staging` pointed at the isolated staging project. The staging hosted smoke uses only synthetic accounts and performs a scoped reset of its synthetic workspace; it verifies both immediate Storage removal and the delayed second pass. Never point that smoke script at production.
+
+The production cutover tool is intentionally guarded and does not print account addresses or file paths. After applying the schema and deploying the production app, take an inventory with:
+
+```powershell
+.\node_modules\node\bin\node.exe --env-file=.env.local scripts/application-library-cutover.mjs --environment=production --inventory
+```
+
+The command reports counts and an inventory fingerprint covering all workspaces, workspace settings, application-library rows, aggregates, and workspace-scoped private Storage paths. The authorized reset requires that exact fingerprint and the fixed confirmation phrase; it briefly pauses library writes, rechecks the inventory while locked, removes only candidate profiles/assignments/applications/history/aggregates, preserves accounts/workspaces/memberships, resumes writes after the empty-state check, and waits for cleanup of the captured old Storage paths:
+
+```powershell
+.\node_modules\node\bin\node.exe --env-file=.env.local scripts/application-library-cutover.mjs --environment=production --reset --expected-fingerprint=<inventory-fingerprint> "--confirm-reset=RESET ALL APPLICATION LIBRARY DATA"
+```
+
+The production cleanup origin defaults to `https://bidder-check.vercel.app`, so a local-development `APP_URL=http://localhost:3000` cannot redirect the cutover worker to localhost. Set `CUTOVER_APP_URL` or pass `--app-url=https://<production-domain>` only when the deployed production domain changes. The script refuses a changed inventory, a different Supabase project, a missing active admin, or a missing `CRON_SECRET`. If database deletion succeeds but Storage verification is still pending, resume without repeating the reset:
+
+```powershell
+.\node_modules\node\bin\node.exe --env-file=.env.local scripts/application-library-cutover.mjs --environment=production --verify-cleanup
+```
+
+Release 2026-10-04: migrations `202610040001`–`202610040009` applied to production. Deployment `dpl_9p1e6z4Fxwd5u6DTGmMWVZFPSXXy` published the shared-profile workflow; deployment `dpl_Ew8mM5XtMmB5RZKRMc8AJbCpAggy` added cleanup failure-phase logging. The authorized reset removed 2 shared profiles, 2 assignments, and 2 resume PDFs from 2 workspaces; there were no bids or earnings. It preserved all 3 accounts, both workspaces, and the bidder membership. The write gate is off, the application library is empty, all queued Storage verification tasks completed, and the production cleanup endpoint returned HTTP 200. A first local cleanup-tool attempt used the development `APP_URL`; the database reset remained successful, and the production scheduled worker completed the delayed verification. The tool now targets the deployed domain and supports cleanup-only recovery.

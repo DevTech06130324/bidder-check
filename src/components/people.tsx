@@ -435,6 +435,18 @@ export function People({ data }: { data: WorkspaceData }) {
   const bidders = data.profiles.filter(
     (p) => p.role === "bidder" && visible(p) && matches(p),
   );
+  // A workspace can belong to an admin (including a promoted client).
+  // Such bidders must remain manageable even though they have no client group.
+  const biddersWithoutClient = bidders.filter((p) => {
+    const membership = data.bidders.find((b) => b.user_id === p.id);
+    if (!membership) return false;
+    const workspace = data.workspaces.find(
+      (w) => w.id === membership.workspace_id,
+    );
+    return !data.profiles.some(
+      (owner) => owner.id === workspace?.owner_id && owner.role === "client",
+    );
+  });
   return (
     <>
       <PageHeading
@@ -486,46 +498,71 @@ export function People({ data }: { data: WorkspaceData }) {
           </div>
         </div>
         {admin ? (
-          clients.length ? (
-            clients.map((p) => {
-              const children = biddersFor(p.id);
-              const w = data.workspaces.find((w) => w.owner_id === p.id);
-              return (
-                <div className="border-b last:border-0" key={p.id}>
-                  {personRow(p)}
-                  <details
-                    className="px-4 pb-4"
-                    open={search ? true : undefined}
-                  >
-                    <summary className="cursor-pointer rounded-lg bg-secondary/50 px-4 py-3 text-sm font-medium">
-                      {children.length} bidders under {p.display_name}
-                    </summary>
-                    <div className="ml-3 border-l pl-3">
-                      {children
-                        .filter(
-                          (b) =>
-                            (tab !== "archived" || p.archived || b.archived) &&
-                            (matches(p) || matches(b)),
-                        )
-                        .map(personRow)}
-                      {!children.length && (
-                        <p className="p-4 text-sm text-muted-foreground">
-                          No bidders yet.
-                        </p>
-                      )}
-                      {w && !p.archived && p.approval_status === "approved" && (
-                        <div className="p-3">
-                          <CreateBidderDialog data={data} workspaceId={w.id} />
-                        </div>
-                      )}
-                    </div>
-                  </details>
-                </div>
-              );
-            })
+          clients.length || biddersWithoutClient.length ? (
+            <>
+              {clients.map((p) => {
+                const children = biddersFor(p.id);
+                const w = data.workspaces.find((w) => w.owner_id === p.id);
+                return (
+                  <div className="border-b last:border-0" key={p.id}>
+                    {personRow(p)}
+                    <details
+                      className="px-4 pb-4"
+                      open={search ? true : undefined}
+                    >
+                      <summary className="cursor-pointer rounded-lg bg-secondary/50 px-4 py-3 text-sm font-medium">
+                        {children.length} bidders under {p.display_name}
+                      </summary>
+                      <div className="ml-3 border-l pl-3">
+                        {children
+                          .filter(
+                            (b) =>
+                              (tab !== "archived" ||
+                                p.archived ||
+                                b.archived) &&
+                              (matches(p) || matches(b)),
+                          )
+                          .map(personRow)}
+                        {!children.length && (
+                          <p className="p-4 text-sm text-muted-foreground">
+                            No bidders yet.
+                          </p>
+                        )}
+                        {w &&
+                          !p.archived &&
+                          p.approval_status === "approved" && (
+                            <div className="p-3">
+                              <CreateBidderDialog
+                                data={data}
+                                workspaceId={w.id}
+                              />
+                            </div>
+                          )}
+                      </div>
+                    </details>
+                  </div>
+                );
+              })}
+              {biddersWithoutClient.length > 0 && (
+                <section
+                  aria-label="Bidders without a client"
+                  className="border-t first:border-t-0"
+                >
+                  <div className="bg-secondary/50 px-4 py-3">
+                    <h2 className="text-sm font-semibold">
+                      Bidders without a client
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      Managed directly by an administrator.
+                    </p>
+                  </div>
+                  {biddersWithoutClient.map(personRow)}
+                </section>
+              )}
+            </>
           ) : (
             <EmptyState
-              title="No matching clients"
+              title="No matching people"
               description="Try another view or search."
             />
           )

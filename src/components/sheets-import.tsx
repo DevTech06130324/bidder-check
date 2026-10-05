@@ -61,14 +61,15 @@ export function SheetsImport({
     [source, setSource] = useState<string[][]>([]);
   const [rows, setRows] = useState<ImportRow[] | null>(null),
     [serverErrors, setServerErrors] = useState<ImportError[]>([]);
+  const [sourceRows, setSourceRows] = useState<number[]>([]);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [checking, setChecking] = useState(false);
   const request = useRef(crypto.randomUUID());
   const [attempted, setAttempted] = useState(false);
   const localErrors = useMemo(
-    () => (rows ? validateImportRows(rows) : []),
-    [rows],
+    () => rows ? validateImportRows(rows).map((entry) => ({ ...entry, row: sourceRows[entry.row - 1] ?? entry.row })) : [],
+    [rows, sourceRows],
   );
   const bidders = data.bidders.filter(
     (b) =>
@@ -77,17 +78,20 @@ export function SheetsImport({
       (!bidderId || b.user_id === bidderId),
   );
   const resumes = data.resumes.filter(
-    (r) => !r.archived && r.bidder_id === bidder,
+    (r) => !r.archived && r.file_id && r.bidder_id === bidder,
   );
   useEffect(() => {
-    if (!rows || !rows.length || localErrors.length || !resume || !date) return;
+    if (!rows || !rows.length || !resume || !date) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       setChecking(true);
       try {
         const result = await checkBidImport(resume, date, rows);
         if (!cancelled) {
-          setServerErrors(result.data ?? []);
+          setServerErrors((result.data ?? []).map((entry) => ({
+            ...entry,
+            row: sourceRows[entry.row - 1] ?? entry.row,
+          })));
           setError(result.error ?? "");
         }
       } catch {
@@ -103,7 +107,7 @@ export function SheetsImport({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [rows, resume, date, localErrors]);
+  }, [rows, resume, date, sourceRows]);
   function parse() {
     try {
       const parsed = parseSheet(text);
@@ -130,32 +134,41 @@ export function SheetsImport({
       const mapped = mapSheet(source, mapping, defaults);
       if (mapped.length > 500) throw new Error("Import at most 500 rows.");
       setRows(mapped);
+      setSourceRows(mapped.map((_, index) => index + 1));
       setServerErrors([]);
-      setChecking(validateImportRows(mapped).length === 0);
+      setChecking(true);
       setError("");
       request.current = crypto.randomUUID();
     } catch (e) {
       setError((e as Error).message);
     }
   }
-  function changeRows(next: ImportRow[]) {
+  function changeRows(next: ImportRow[], nextSourceRows = sourceRows) {
     setAttempted(false);
     setRows(next);
+    setSourceRows(nextSourceRows);
     setServerErrors([]);
-    setChecking(validateImportRows(next).length === 0 && next.length > 0);
+    setChecking(next.length > 0);
     setError("");
     request.current = crypto.randomUUID();
   }
   async function submit() {
     if (!rows) return;
+    const allowed = rows
+      .map((row, index) => ({ row, originalRow: sourceRows[index] ?? index + 1 }))
+      .filter(({ originalRow }) => !errors.some((entry) => entry.row === originalRow));
+    if (!allowed.length) return;
     setAttempted(true);
     setBusy(true);
     setError("");
     try {
-      const result = await importBids(resume, date, rows, request.current);
+      const result = await importBids(resume, date, allowed.map((item) => item.row), request.current);
       if (result.error) setError(result.error);
       else if (result.data?.errors) {
-        setServerErrors(result.data.errors);
+        setServerErrors(result.data.errors.map((entry) => ({
+          ...entry,
+          row: allowed[entry.row - 1]?.originalRow ?? entry.row,
+        })));
         setAttempted(false);
       } else if (result.data?.ids) {
         toast.success(
@@ -173,7 +186,11 @@ export function SheetsImport({
       setBusy(false);
     }
   }
-  const errors = [...localErrors, ...serverErrors];
+  const serverIssueFields = new Set(serverErrors.map((entry) => `${entry.row}:${entry.field}`));
+  const errors = [
+    ...localErrors.filter((entry) => !serverIssueFields.has(`${entry.row}:${entry.field}`)),
+    ...serverErrors,
+  ];
   return (
     <Dialog
       open
@@ -339,12 +356,13 @@ export function SheetsImport({
                       </th>
                     ))}
                     <th>Remove</th>
+                    <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row, i) => (
                     <tr key={i}>
-                      <th className="border p-2">{i + 1}</th>
+                    <th className="border p-2">{sourceRows[i] ?? i + 1}</th>
                       {importFields.map((f) => {
                         const issues = errors.filter(
                           (e) => e.row === i + 1 && e.field === f,
@@ -352,8 +370,8 @@ export function SheetsImport({
                         return (
                           <td key={f} className="min-w-40 border p-1">
                             <Input
-                              aria-label={`Row ${i + 1} ${fieldLabels[f]}`}
-                              aria-invalid={!!issues.length}
+                          aria-label={`Row ${sourceRows[i] ?? i + 1} ${fieldLabels[f]}`}
+                          aria-invalid={!!issues.length}
                               className="h-8 text-xs"
                               value={row[f]}
                               disabled={busy}
@@ -361,7 +379,7 @@ export function SheetsImport({
                                 changeRows(
                                   rows.map((r, j) =>
                                     j === i ? { ...r, [f]: e.target.value } : r,
-                                  ),
+                                  ), sourceRows,
                                 )
                               }
                             />
@@ -375,16 +393,25 @@ export function SheetsImport({
                       })}
                       <td className="border">
                         <Button
-                          aria-label={`Remove row ${i + 1}`}
+                          aria-label={`Remove row ${sourceRows[i] ?? i + 1}`}
                           size="sm"
                           variant="ghost"
                           disabled={busy}
                           onClick={() =>
-                            changeRows(rows.filter((_, j) => j !== i))
+                            changeRows(rows.filter((_, j) => j !== i), sourceRows.filter((_, j) => j !== i))
                           }
                         >
                           Remove
                         </Button>
+                      </td>
+                      <td className="border px-2">
+                        {errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1)) ? (
+                          <span className="font-medium text-destructive">Blocked</span>
+                        ) : checking ? (
+                          <span className="text-muted-foreground">Checking</span>
+                        ) : (
+                          <span className="font-medium text-emerald-700 dark:text-emerald-300">Allowed</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -393,7 +420,7 @@ export function SheetsImport({
             </div>
             {checking && (
               <p role="status" className="text-sm">
-                Checking rows and existing URLs...
+                Checking profile restrictions and duplicate applications...
               </p>
             )}
             <div className="flex gap-2">
@@ -409,12 +436,10 @@ export function SheetsImport({
                 Back to mapping
               </Button>
               <Button
-                disabled={
-                  busy || checking || !!errors.length || !rows.length || !!error
-                }
+                disabled={busy || checking || !rows.length || !rows.some((_, i) => !errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1))) || !!error}
                 onClick={submit}
               >
-                {busy ? "Importing..." : `Import ${rows.length} bids`}
+                {busy ? "Importing..." : `Import ${rows.filter((_, i) => !errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1))).length} allowed bids`}
               </Button>
               {error && (
                 <Button

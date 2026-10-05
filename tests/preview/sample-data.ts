@@ -34,6 +34,7 @@ const resumes = people.map((p, i) => ({
   id: `resume-${i}`,
   workspace_id: "workspace",
   bidder_id: p.id,
+  profile_id: `profile-${p.id}`,
   identifier: ["ENG-01", "FULLSTACK-02", "DESIGN-03"][i],
   candidate_name: p.display_name,
   email: p.email,
@@ -43,9 +44,27 @@ const resumes = people.map((p, i) => ({
   instructions:
     "Focus on remote roles. Use the attached resume and include the portfolio link.",
   rate_override_cents: null,
-  file_id: null,
+  file_id: "resume-file",
   archived: false,
   created_at: now,
+}));
+const candidateProfiles = people.map((p, i) => ({
+  id: `profile-${p.id}`,
+  workspace_id: "workspace",
+  identifier: ["ENG-01", "FULLSTACK-02", "DESIGN-03"][i],
+  candidate_name: p.display_name,
+  address: "Chicago, IL",
+  links: "https://example.test/portfolio",
+  instructions:
+    "Focus on remote roles. Use the attached resume and include the portfolio link.",
+  max_bids_per_company: 3,
+  restricted_companies: [],
+  restricted_roles: [],
+  restricted_links: [],
+  retention_months: 3,
+  archived: false,
+  created_at: now,
+  updated_at: now,
 }));
 const companies = [
   "Linear",
@@ -83,6 +102,8 @@ export const fixture: WorkspaceData = {
   profiles: [profile, ...people],
   bidders,
   resumes,
+  candidateProfiles,
+  historicalAggregates: [],
   invitations: [],
   bids: companies.map((company, i) => ({
     id: `bid-${i}`,

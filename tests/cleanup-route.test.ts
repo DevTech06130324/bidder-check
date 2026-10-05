@@ -1,11 +1,18 @@
 import { afterEach, expect, it, vi } from "vitest";
-const { worker } = vi.hoisted(() => ({ worker: vi.fn() }));
+const { worker, adminRpc } = vi.hoisted(() => ({ worker: vi.fn(), adminRpc: vi.fn() }));
 vi.mock("@/lib/storage-cleanup", () => ({ runStorageCleanup: worker }));
+vi.mock("@/lib/admin", () => ({ adminClient: () => ({ rpc: adminRpc }) }));
 import { GET } from "@/app/api/cron/storage-cleanup/route";
 afterEach(() => {
   vi.unstubAllEnvs();
   worker.mockReset();
+  adminRpc.mockReset();
 });
+const mockRetention = () => {
+  adminRpc
+    .mockResolvedValueOnce({ data: { deletedApplications: 0, storageTasksQueued: 0 }, error: null })
+    .mockResolvedValueOnce({ data: { pending: 0, verificationPending: 0 }, error: null });
+};
 it("requires the exact server secret and fails closed when unconfigured", async () => {
   vi.stubEnv("CRON_SECRET", "");
   expect(
@@ -23,6 +30,7 @@ it("requires the exact server secret and fails closed when unconfigured", async 
   ).toBe(401);
   expect(worker).not.toHaveBeenCalled();
   worker.mockResolvedValue({ attempted: 2, succeeded: 2, failed: 0 });
+  mockRetention();
   expect(
     (
       await GET(
@@ -43,6 +51,7 @@ it("drains multiple batches within the function limit and reports a pending retr
       }),
     );
   worker.mockResolvedValue({ attempted: 0, succeeded: 0, failed: 0 });
+  mockRetention();
   await call();
   expect(worker).toHaveBeenCalledWith(undefined, {
     maxBatches: expect.any(Number),
@@ -50,6 +59,7 @@ it("drains multiple batches within the function limit and reports a pending retr
   });
   expect(worker.mock.calls[0][1].maxBatches).toBeGreaterThan(1);
   worker.mockRejectedValue(new Error("db down"));
+  mockRetention();
   const failed = await call();
   expect(failed.status).toBe(503);
   expect(JSON.stringify(await failed.json())).not.toMatch(/db down/);

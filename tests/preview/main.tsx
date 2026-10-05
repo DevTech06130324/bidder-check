@@ -5,6 +5,7 @@ import { Shell } from "@/components/shell";
 import { Dashboard } from "@/components/dashboard";
 import { BidWorkspace } from "@/components/bids";
 import { ResumeLibrary } from "@/components/resumes";
+import { CandidateProfileLibrary } from "@/components/profiles";
 import { People } from "@/components/people";
 import { Earnings } from "@/components/earnings";
 import { Settings } from "@/components/settings";
@@ -21,7 +22,55 @@ const pages: Record<string, React.ReactNode> = {
     />
   ),
   "/resumes": <ResumeLibrary data={fixture} />,
+  "/profiles": <CandidateProfileLibrary data={fixture} />,
   "/users": <People data={fixture} />,
+  "/admin-users": (
+    <People
+      data={{
+        ...fixture,
+        profile: { ...fixture.profile, id: "admin", role: "admin" },
+        profiles: [
+          ...fixture.profiles,
+          { ...fixture.profile, id: "admin", role: "admin" },
+          {
+            ...fixture.profiles[1],
+            id: "standalone",
+            display_name: "Independent Bidder",
+            email: "independent@example.test",
+          },
+          {
+            ...fixture.profiles[1],
+            id: "archived-standalone",
+            display_name: "Archived Independent",
+            email: "archived@example.test",
+            archived: true,
+          },
+        ],
+        workspaces: [
+          ...fixture.workspaces,
+          {
+            ...fixture.workspaces[0],
+            id: "admin-workspace",
+            owner_id: "admin",
+          },
+        ],
+        bidders: [
+          ...fixture.bidders,
+          {
+            ...fixture.bidders[0],
+            user_id: "standalone",
+            workspace_id: "admin-workspace",
+          },
+          {
+            ...fixture.bidders[0],
+            user_id: "archived-standalone",
+            workspace_id: "admin-workspace",
+            archived: true,
+          },
+        ],
+      }}
+    />
+  ),
   "/earnings": <Earnings data={fixture} />,
   "/settings": <Settings data={fixture} />,
 };

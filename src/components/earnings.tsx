@@ -29,7 +29,15 @@ export function Earnings({
           "America/Chicago",
       ),
   );
-  const total = summarizeEarnings(records);
+  const history = data.historicalAggregates.filter((row) =>
+    row.metric === "earning" && (!bidderId || row.bidder_id === bidderId) &&
+    (!from || row.report_day >= from) && (!to || row.report_day <= to),
+  );
+  const liveTotal = summarizeEarnings(records);
+  const total = {
+    count: liveTotal.count + history.reduce((sum, row) => sum + row.record_count, 0),
+    cents: liveTotal.cents + history.reduce((sum, row) => sum + Number(row.earned_cents), 0),
+  };
   const groups = (
     group === "bidder"
       ? data.bidders
@@ -46,11 +54,21 @@ export function Earnings({
           .filter((r) => !bidderId || r.bidder_id === bidderId)
           .map((r) => ({
             id: r.id,
-            label: r.identifier,
-            sub: r.candidate_name,
+            label: data.candidateProfiles.find((p) => p.id === r.profile_id)?.identifier ?? "Profile",
+            sub: `${data.candidateProfiles.find((p) => p.id === r.profile_id)?.candidate_name ?? "Candidate"} · ${data.profiles.find((p) => p.id === r.bidder_id)?.display_name ?? "Bidder"}`,
             rows: records.filter((b) => b.resume_id === r.id),
           }))
-  ).map((g) => ({ ...g, summary: summarizeEarnings(g.rows) }));
+  ).map((g) => {
+    const retained = history.filter((row) => (group === "bidder" ? row.bidder_id : row.resume_id) === g.id);
+    const summary = summarizeEarnings(g.rows);
+    return {
+      ...g,
+      summary: {
+        count: summary.count + retained.reduce((sum, row) => sum + row.record_count, 0),
+        cents: summary.cents + retained.reduce((sum, row) => sum + Number(row.earned_cents), 0),
+      },
+    };
+  });
   return (
     <>
       {!embedded && (
@@ -70,9 +88,10 @@ export function Earnings({
           },
           {
             label: "Resumes with earnings",
-            value: new Set(
-              records.filter((r) => r.applied).map((r) => r.resume_id),
-            ).size,
+            value: new Set([
+              ...records.filter((r) => r.applied).map((r) => r.resume_id),
+              ...history.map((row) => row.resume_id),
+            ]).size,
             icon: FileText,
           },
         ].map((s) => (
@@ -184,6 +203,7 @@ export function Earnings({
           This is an earnings record, not a payment or payout balance. Each
           workspace’s reporting timezone is used.
         </p>
+        {!!history.length && <p className="mt-3 text-xs text-muted-foreground">Includes {history.reduce((sum, row) => sum + row.record_count, 0)} retained historical applications. Their individual application details have been removed.</p>}
       </section>
     </>
   );

@@ -70,10 +70,12 @@ type Bid = Row<"bids">;
 export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
+  const [saveError, setSaveError] = useState("");
   const router = useRouter();
   const active = data.resumes.filter(
     (r) =>
       (!r.archived &&
+        !!r.file_id &&
         !data.bidders.find((b) => b.user_id === r.bidder_id)?.archived) ||
       r.id === bid?.resume_id,
   );
@@ -104,8 +106,12 @@ export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
           action={(form) =>
             start(async () => {
               const result = await saveBid(form);
-              if (result.error) toast.error(result.error);
+              if (result.error) {
+                setSaveError(result.error);
+                toast.error(result.error);
+              }
               else {
+                setSaveError("");
                 toast.success(bid ? "Bid updated" : "Opportunity added");
                 setOpen(false);
                 router.refresh();
@@ -113,13 +119,19 @@ export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
             })
           }
         >
+          {saveError && !["url", "company", "role_name", "resume_id"].some((field) => {
+            if (field === "url") return /url|link|job/i.test(saveError);
+            if (field === "company") return /company|limit/i.test(saveError);
+            if (field === "role_name") return /role|application for this job/i.test(saveError);
+            return /profile|resume/i.test(saveError);
+          }) && <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{saveError}</p>}
           <input type="hidden" name="id" value={bid?.id ?? ""} />
           {bid?.first_applied_at ? (
             <>
               <input type="hidden" name="resume_id" value={bid.resume_id} />
               <p className="rounded-lg bg-secondary p-3 text-xs">
                 Resume:{" "}
-                {data.resumes.find((r) => r.id === bid.resume_id)?.identifier} ·
+                {data.candidateProfiles.find((p) => p.id === data.resumes.find((r) => r.id === bid.resume_id)?.profile_id)?.identifier} ·
                 Locked after first application
               </p>
             </>
@@ -132,11 +144,12 @@ export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
             >
               {active.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.identifier} · {r.candidate_name}
+                  {data.candidateProfiles.find((p) => p.id === r.profile_id)?.identifier} · {data.candidateProfiles.find((p) => p.id === r.profile_id)?.candidate_name}
                 </option>
               ))}
             </SelectField>
           )}
+          <div>
           <Field
             label="Job URL"
             name="url"
@@ -144,22 +157,27 @@ export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
             required
             placeholder="https://company.com/careers/…"
             defaultValue={bid?.url}
+            onChange={() => setSaveError("")}
           />
+          {/url|link|job/i.test(saveError) && <p role="alert" className="mt-1 text-xs text-destructive">{saveError}</p>}
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field
+            <div><Field
               label="Company name"
               name="company"
               required
               defaultValue={bid?.company}
               placeholder="Acme"
-            />
-            <Field
+              onChange={() => setSaveError("")}
+            />{/company|limit/i.test(saveError) && <p role="alert" className="mt-1 text-xs text-destructive">{saveError}</p>}</div>
+            <div><Field
               label="Role name"
               name="role_name"
               required
               defaultValue={bid?.role_name}
               placeholder="Senior Software Engineer"
-            />
+              onChange={() => setSaveError("")}
+            />{/role|application for this job/i.test(saveError) && <p role="alert" className="mt-1 text-xs text-destructive">{saveError}</p>}</div>
             <SelectField
               label="Work arrangement"
               name="arrangement"
@@ -455,7 +473,7 @@ export function BidWorkspace({
       cell: ({ row }) => (
         <Badge variant="outline">
           {data.resumes.find((r) => r.id === row.original.resume_id)
-            ?.identifier ?? "-"}
+            ?.profile_id ? data.candidateProfiles.find((p) => p.id === data.resumes.find((r) => r.id === row.original.resume_id)?.profile_id)?.identifier ?? "-" : "-"}
         </Badge>
       ),
     },
@@ -749,7 +767,7 @@ export function BidWorkspace({
                 <option value="all">All resumes</option>
                 {data.resumes.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.identifier}
+                    {data.candidateProfiles.find((p) => p.id === r.profile_id)?.identifier}
                   </option>
                 ))}
               </SelectField>
@@ -981,7 +999,7 @@ export function BidWorkspace({
                     {
                       label: "Resume",
                       value: data.resumes.find((r) => r.id === active.resume_id)
-                        ?.identifier,
+                        ?.profile_id ? data.candidateProfiles.find((p) => p.id === data.resumes.find((r) => r.id === active.resume_id)?.profile_id)?.identifier : undefined,
                     },
                     { label: "Source", value: active.source },
                     { label: "Job status", value: active.job_status },

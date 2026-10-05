@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Users,
   FileText,
+  ContactRound,
   BriefcaseBusiness,
   Wallet,
   Settings,
@@ -31,6 +32,7 @@ const links = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/bids", label: "Bid workspace", icon: BriefcaseBusiness },
   { href: "/resumes", label: "Resume library", icon: FileText },
+  { href: "/profiles", label: "Candidate profiles", icon: ContactRound },
   { href: "/users", label: "People", icon: Users },
   { href: "/earnings", label: "Earnings", icon: Wallet },
 ];
@@ -79,7 +81,11 @@ export function Shell({
       {!small && <p className="eyebrow px-6 pb-3">WORKSPACE</p>}
       <nav className="space-y-1 px-3">
         {links
-          .filter((l) => l.href !== "/users" || profile.role !== "bidder")
+          .filter(
+            (l) =>
+              (l.href !== "/users" && l.href !== "/profiles") ||
+              profile.role !== "bidder",
+          )
           .map((l) => (
             <Link
               title={l.label}

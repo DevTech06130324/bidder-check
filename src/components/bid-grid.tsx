@@ -167,7 +167,7 @@ export function BidGrid({
   }
   function value(bid: Bid, field: string): string {
     if (field === "resume_id")
-      return data.resumes.find((r) => r.id === bid.resume_id)?.identifier ?? "";
+      return data.candidateProfiles.find((p) => p.id === data.resumes.find((r) => r.id === bid.resume_id)?.profile_id)?.identifier ?? "";
     if (field === "applied") return bid.applied ? "Applied" : "Unapplied";
     if (field === "found_at" || field === "applied_at")
       return bid[field]
@@ -359,6 +359,14 @@ export function BidGrid({
                       if (e.target === e.currentTarget && !selection && !edit)
                         setSelection({ anchor: point, end: point });
                     }}
+                    onKeyDown={(e) => {
+                      if (edit || (e.target as HTMLElement).closest("button,a,input,select,textarea")) return;
+                      if (e.key === "Enter" || e.key === "F2") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        startEdit(point);
+                      }
+                    }}
                     onPointerDown={(e) => {
                       if (edit) return;
                       dragging.current = true;
@@ -435,11 +443,12 @@ export function BidGrid({
                                   .filter(
                                     (v) =>
                                       v.bidder_id === row.original.bidder_id &&
-                                      !v.archived,
+                                      !v.archived &&
+                                      !!v.file_id,
                                   )
                                   .map((v) => (
                                     <option key={v.id} value={v.id}>
-                                      {v.identifier}
+                                      {data.candidateProfiles.find((p) => p.id === v.profile_id)?.identifier ?? "Profile"}
                                     </option>
                                   ))}
                           </select>

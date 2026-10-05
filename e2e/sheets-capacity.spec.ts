@@ -21,7 +21,7 @@ test("500-row preview remains usable with Unicode, quoted multiline values", asy
   await page.getByRole("button", { name: "Read columns" }).click();
   await page.getByRole("button", { name: "Preview bids" }).click();
   await expect(
-    page.getByRole("button", { name: "Import 500 bids", exact: true }),
+    page.getByRole("button", { name: "Import 500 allowed bids", exact: true }),
   ).toBeEnabled();
   await expect(page.getByLabel("Row 500 Company", { exact: true })).toHaveValue(
     "\u6771\u4eac 499",
@@ -30,7 +30,7 @@ test("500-row preview remains usable with Unicode, quoted multiline values", asy
     .getByRole("button", { name: "Remove row 500", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Import 499 bids", exact: true }),
+    page.getByRole("button", { name: "Import 499 allowed bids", exact: true }),
   ).toBeEnabled();
 });
 test("an admin import scoped to a bidder keeps the workspace and bidder fixed", async ({

@@ -30,9 +30,14 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
   const [days, setDays] = useState(30);
   const timezone = data.workspaces[0]?.timezone ?? "America/Chicago";
   const now = new Date();
-  const from = new Date(now.getTime() - (days - 1) * 86400000);
-  const fromDate = formatInTimeZone(from, timezone, "yyyy-MM-dd");
-  const bids = data.bids.filter(
+  const throughDate = formatInTimeZone(now, timezone, "yyyy-MM-dd");
+  const firstDay = new Date(`${throughDate}T00:00:00Z`);
+  firstDay.setUTCDate(firstDay.getUTCDate() - (days - 1));
+  const fromDate = firstDay.toISOString().slice(0, 10);
+  const retained = data.historicalAggregates.filter(
+    (row) => row.report_day >= fromDate && row.report_day <= throughDate,
+  );
+  const liveFound = data.bids.filter(
     (b) =>
       formatInTimeZone(
         b.found_at,
@@ -41,8 +46,16 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
         "yyyy-MM-dd",
       ) >= fromDate,
   );
-  const applied = bids.filter((b) => b.applied);
-  const earnings = summarizeEarnings(
+  const foundHistory = retained.filter((row) => row.metric === "found").reduce((sum, row) => sum + row.record_count, 0);
+  const appliedHistory = retained.filter((row) => row.metric === "applied_activity").reduce((sum, row) => sum + row.record_count, 0);
+  const earningHistory = retained.filter((row) => row.metric === "earning");
+  const bids = liveFound.length + foundHistory;
+  const applied = data.bids.filter(
+    (b) => b.applied && b.applied_at &&
+      formatInTimeZone(b.applied_at, data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ?? timezone, "yyyy-MM-dd") >= fromDate &&
+      formatInTimeZone(b.applied_at, data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ?? timezone, "yyyy-MM-dd") <= throughDate,
+  );
+  const liveEarnings = summarizeEarnings(
     data.bids.filter(
       (b) =>
         b.first_applied_at &&
@@ -54,33 +67,38 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
         ) >= fromDate,
     ),
   );
+  const earnings = {
+    count: liveEarnings.count + earningHistory.reduce((sum, row) => sum + row.record_count, 0),
+    cents: liveEarnings.cents + earningHistory.reduce((sum, row) => sum + Number(row.earned_cents), 0),
+  };
   const chart = Array.from({ length: days }, (_, i) => {
-    const d = new Date(from.getTime() + i * 86400000);
-    const date = formatInTimeZone(d, timezone, "yyyy-MM-dd");
+    const d = new Date(firstDay);
+    d.setUTCDate(d.getUTCDate() + i);
+    const date = d.toISOString().slice(0, 10);
     return {
       date: formatInTimeZone(d, timezone, "MMM d"),
-      found: bids.filter(
+      found: liveFound.filter(
         (b) => formatInTimeZone(b.found_at, timezone, "yyyy-MM-dd") === date,
-      ).length,
+      ).length + retained.filter((row) => row.metric === "found" && row.report_day === date).reduce((sum, row) => sum + row.record_count, 0),
       applied: data.bids.filter(
         (b) =>
           b.applied &&
-          b.first_applied_at &&
-          formatInTimeZone(b.first_applied_at, timezone, "yyyy-MM-dd") === date,
-      ).length,
+          b.applied_at &&
+          formatInTimeZone(b.applied_at, timezone, "yyyy-MM-dd") === date,
+      ).length + retained.filter((row) => row.metric === "applied_activity" && row.report_day === date).reduce((sum, row) => sum + row.record_count, 0),
     };
   });
-  const sources = [...new Set(bids.map((b) => b.source || "Other"))]
+  const sources = [...new Set(liveFound.map((b) => b.source || "Other"))]
     .map((source) => ({
       source,
-      count: bids.filter((b) => (b.source || "Other") === source).length,
+      count: liveFound.filter((b) => (b.source || "Other") === source).length,
     }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
   const stats = [
     {
       label: "Total bids",
-      value: bids.length.toLocaleString(),
+      value: bids.toLocaleString(),
       sub: "Opportunities discovered",
       icon: BriefcaseBusiness,
       color: "text-primary",
@@ -88,15 +106,15 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
     },
     {
       label: "Applications sent",
-      value: applied.length.toLocaleString(),
-      sub: `${bids.length - applied.length} waiting to be applied`,
+      value: (applied.length + appliedHistory).toLocaleString(),
+      sub: `${Math.max(0, bids - applied.length - appliedHistory)} waiting to be applied`,
       icon: CheckCheck,
       color: "text-emerald-600",
       bg: "bg-emerald-500/10",
     },
     {
       label: "Application rate",
-      value: `${bids.length ? Math.round((applied.length / bids.length) * 100) : 0}%`,
+      value: `${bids ? Math.round(((applied.length + appliedHistory) / bids) * 100) : 0}%`,
       sub: "Of discovered opportunities",
       icon: Target,
       color: "text-sky-600",
@@ -105,7 +123,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
     {
       label: "Total earnings",
       value: usd(earnings.cents),
-      sub: `${earnings.count} qualifying applications`,
+      sub: `${earnings.count} qualifying applications${earningHistory.length ? " · includes retained history" : ""}`,
       icon: Wallet,
       color: "text-amber-600",
       bg: "bg-amber-500/10",
@@ -153,6 +171,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
           </div>
         ))}
       </div>
+      {!!retained.length && <p className="-mt-3 mb-6 rounded-lg bg-muted px-4 py-3 text-xs text-muted-foreground">Totals include daily history for applications whose details were permanently removed after their profile retention period.</p>}
       <div className="mb-7 grid gap-6 xl:grid-cols-[1fr_310px]">
         <section className="panel p-6">
           <div className="mb-7 flex items-center justify-between">
@@ -176,7 +195,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
           <div
             className="h-[235px] w-full min-w-0"
             role="img"
-            aria-label={`Activity chart: ${bids.length} bids found and ${applied.length} applied in this period`}
+          aria-label={`Activity chart: ${bids} bids found and ${applied.length + appliedHistory} applied in this period`}
           >
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
@@ -257,7 +276,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
                     <div
                       className="h-full rounded-full"
                       style={{
-                        width: `${(s.count / Math.max(1, bids.length)) * 100}%`,
+                        width: `${(s.count / Math.max(1, liveFound.length)) * 100}%`,
                         background: [
                           "#8072de",
                           "#6ba8e8",

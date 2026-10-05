@@ -157,7 +157,7 @@ test("spreadsheet keyboard edits preserve drafts, focus and rectangular copying"
     page.locator('[role="gridcell"][aria-selected="true"]'),
   ).toHaveCount(0);
 });
-test("Sheets mapping creates an editable preview and blocks invalid rows", async ({
+test("Sheets mapping keeps blocked rows visible and allows valid rows to import", async ({
   page,
 }) => {
   await page.goto("http://127.0.0.1:3001/bids");
@@ -176,17 +176,18 @@ test("Sheets mapping creates an editable preview and blocks invalid rows", async
   await page.getByRole("button", { name: "Read columns" }).click();
   await page.getByRole("button", { name: "Preview bids" }).click();
   await expect(
-    page.getByRole("button", { name: "Import 2 bids", exact: true }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: "Import 1 allowed bids", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText("Enter a valid HTTP/HTTPS URL", { exact: false }).first()).toBeVisible();
   await page
     .getByLabel("Row 2 Job URL", { exact: true })
     .fill("https://example.com/two");
   await expect(
-    page.getByRole("button", { name: "Import 2 bids", exact: true }),
+    page.getByRole("button", { name: "Import 2 allowed bids", exact: true }),
   ).toBeEnabled();
   await page.getByRole("button", { name: "Remove row 1", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Import 1 bids", exact: true }),
+    page.getByRole("button", { name: "Import 1 allowed bids", exact: true }),
   ).toBeEnabled();
 });
 test("inline conflict preserves the draft and requires review before retry", async ({
@@ -252,9 +253,14 @@ test("keyboard focus initializes grid navigation without a mouse", async ({
   page,
 }) => {
   await page.goto("http://127.0.0.1:3001/bids");
-  await page.locator('[data-grid-r="0"][data-grid-c="0"]').focus();
+  const company = page.locator('[data-grid-r="0"][data-field="company"]');
+  const role = page.locator('[data-grid-r="0"][data-field="role_name"]');
+  await company.focus();
+  await expect(company).toBeFocused();
   await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
+  await expect(role).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(company).toBeFocused();
   await page.keyboard.press("F2");
   await expect(
     page.getByRole("textbox", { name: "Edit company", exact: true }),

@@ -160,7 +160,7 @@ export function FileUpload({
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
         {kind === "screenshot"
           ? "PNG, JPG or WebP · Paste with Ctrl+V"
-          : "PDF, DOC or DOCX"}{" "}
+          : "PDF document only"}{" "}
         · Up to 10 MB
       </p>
       {error && (

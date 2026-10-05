@@ -10,7 +10,7 @@ export const importFields = [
 ] as const;
 export type ImportField = (typeof importFields)[number];
 export type ImportRow = Record<ImportField, string>;
-export type ImportError = { row: number; field: string; message: string };
+export type ImportError = { row: number; field: string; message: string; code?: string };
 export const fieldLabels: Record<ImportField, string> = {
   company: "Company",
   role_name: "Role",

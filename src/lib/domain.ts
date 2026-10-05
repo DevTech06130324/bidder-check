@@ -107,11 +107,7 @@ export function dateInRange(
 }
 export const uploadTypes = {
   screenshot: ["image/png", "image/jpeg", "image/webp"],
-  resume: [
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ],
+  resume: ["application/pdf"],
 };
 export function validateUpload(
   kind: keyof typeof uploadTypes,
