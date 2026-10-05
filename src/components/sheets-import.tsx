@@ -185,7 +185,11 @@ export function SheetsImport({
       }
       importSent = true;
       const result = await importBids(payload.resume, payload.date, payload.rows, payload.requestId);
-      if (result.error) { frozen.current = null; setUncertain(false); setError(result.error); }
+      if (result.error) {
+        frozen.current = result.uncertain ? payload : null;
+        setUncertain(!!result.uncertain);
+        setError(result.uncertain ? "Connection interrupted. Retry keeps the same request and will not duplicate bids." : result.error);
+      }
       else if (result.data?.errors) {
         frozen.current = null;
         setUncertain(false);

@@ -206,6 +206,20 @@ test("Sheets mapping keeps blocked rows visible and allows valid rows to import"
     page.getByRole("button", { name: "Import 1 allowed bids", exact: true }),
   ).toBeEnabled();
 });
+test("a lost import response freezes the reviewed batch for retry", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids?lost-import");
+  await page.getByRole("button", { name: "Paste from Sheets", exact: true }).click();
+  await page.getByLabel("Import bidder", { exact: true }).selectOption("bidder-0");
+  await page.getByLabel("Import resume", { exact: true }).selectOption("resume-0");
+  await page.getByLabel("Copied Google Sheets cells").fill("Acme\tEngineer\thttps://example.com/one");
+  await page.getByRole("button", { name: "Read columns" }).click();
+  await page.getByRole("button", { name: "Preview bids" }).click();
+  await expect(page.getByText("Validating profile restrictions")).toHaveCount(0);
+  await page.getByRole("button", { name: "Import 1 allowed bids", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Retry same import", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Row 1 Company", { exact: true })).toBeDisabled();
+});
+
 test("Sheets import stays available when every row is blocked and explains the result", async ({
   page,
 }) => {

@@ -252,6 +252,19 @@ try {
     ).id,
   );
   ok(await client.auth.signInWithPassword({ email: ownerEmail, password }));
+  const signupAlert = ok(await administrator.from("inbox_notifications")
+    .select("id,href,read_at,resolved_at").eq("client_id", owner.id).single());
+  assert.equal(signupAlert.read_at, null);
+  assert.equal(signupAlert.resolved_at, null);
+  assert.equal(signupAlert.href, `/users?tab=pending&highlight=${owner.id}`);
+  assert.deepEqual(ok(await client.from("inbox_notifications").select("id")), []);
+  await ap.goto(`${origin}/notifications`);
+  const alertCard = ap.locator(`#notification-${signupAlert.id}`);
+  await expect(alertCard).toContainText(ownerEmail);
+  await alertCard.getByRole("link", { name: "Review client", exact: true }).click();
+  await expect(ap).toHaveURL(new RegExp(`/users\\?tab=pending&highlight=${owner.id}`));
+  await expect(ap.getByRole("button", { name: /^pending/i })).toHaveAttribute("aria-pressed", "true");
+  pass("Public signup creates a private admin inbox alert with a highlighted approval deep link");
   assert.equal(
     ok(
       await client
@@ -295,6 +308,7 @@ try {
   pass(
     "Signup is pending; URL and direct API access blocked; admin rejects with visible reason then approves",
   );
+  assert.ok(ok(await administrator.from("inbox_notifications").select("resolved_at").eq("id", signupAlert.id).single()).resolved_at);
   await ap.goto(`${origin}/users`);
   await ap.getByRole("button", { name: "Add client", exact: true }).click();
   await ap
@@ -313,6 +327,7 @@ try {
   );
   users.push(managed.id);
   assert.equal(managed.approval_status, "approved");
+  assert.deepEqual(ok(await admin.from("inbox_notifications").select("id").eq("client_id", managed.id)), []);
   await ap.getByLabel("Search people").fill(managedEmail);
   await ap.getByRole("button", { name: "Manage", exact: true }).click();
   await ap.getByLabel("Account status").selectOption("true");
@@ -504,14 +519,29 @@ try {
   await cp.getByRole("button", { name: "Assign profile", exact: true }).click();
   await cp.getByLabel("Assigned bidder", { exact: true }).selectOption(invited.id);
   const sharedProfile = ok(
-    await client.from("candidate_profiles").select("id").eq("identifier", "SMOKE-01").single(),
+    await client.from("candidate_profiles").select("id,retention_months").eq("identifier", "SMOKE-01").single(),
   );
+  assert.equal(sharedProfile.retention_months, 2);
   await cp.getByLabel("Candidate profile", { exact: true }).selectOption(sharedProfile.id);
   await cp.getByLabel("Email address", { exact: true }).fill("candidate@example.com");
   await cp.getByLabel("Phone number", { exact: true }).fill("312-555-0101");
   await cp.getByLabel("Rate override per bid (USD)", { exact: true }).fill("2.50");
-  await cp.getByRole("button", { name: "Save assignment", exact: true }).click();
-  await expect(cp.getByText("Bidder assignment saved", { exact: true })).toBeVisible();
+  const pdf = await cp.pdf({ format: "A4" });
+  await cp.getByLabel("Choose resume file", { exact: true }).setInputFiles({
+    name: "invalid.pdf", mimeType: "application/pdf", buffer: Buffer.from("not a PDF"),
+  });
+  await cp.getByRole("button", { name: "Assign profile and upload PDF", exact: true }).click();
+  await expect(cp.getByRole("dialog").getByRole("alert")).toBeVisible();
+  const incompleteAssignment = ok(await client.from("resumes").select("id,file_id")
+    .eq("profile_id", sharedProfile.id).eq("bidder_id", invited.id).single());
+  assert.equal(incompleteAssignment.file_id, null);
+  await expect(cp.getByRole("dialog").locator('input[name="id"]')).toHaveValue(incompleteAssignment.id);
+  await expect(cp.getByLabel("Email address", { exact: true })).toHaveValue("candidate@example.com");
+  await cp.getByLabel("Choose resume file", { exact: true }).setInputFiles({
+    name: "resume.pdf", mimeType: "application/pdf", buffer: pdf,
+  });
+  await cp.getByRole("button", { name: "Assign profile and upload PDF", exact: true }).click();
+  await expect(cp.getByText("Assignment and resume saved", { exact: true })).toBeVisible();
   const resume = ok(
     await client
       .from("resumes")
@@ -520,15 +550,13 @@ try {
       .eq("bidder_id", invited.id)
       .single(),
   );
-  const pdf = await cp.pdf({ format: "A4" });
-  await cp.getByLabel("Choose resume file", { exact: true }).setInputFiles({
-    name: "resume.pdf",
-    mimeType: "application/pdf",
-    buffer: pdf,
-  });
-  await expect(cp.getByText("Resume file saved", { exact: true })).toBeVisible({
-    timeout: 45000,
-  });
+  assert.ok(resume.file_id);
+  assert.equal(resume.id, incompleteAssignment.id);
+  await expect(cp.getByRole("dialog")).toHaveCount(0);
+  await expect(cp.getByRole("button", { name: "Assign profile", exact: true })).toBeEnabled();
+  await cp.getByRole("button", { name: "Assign profile", exact: true }).click();
+  await expect(cp.getByRole("dialog").locator('input[name="id"]')).toHaveValue("");
+  await cp.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
   await bp.goto(`${origin}/resumes`);
   await bp.getByRole("button", { name: /Smoke Candidate/ }).click();
   await expect(bp.getByRole("button", { name: "Edit profile" })).toHaveCount(0);
@@ -1445,6 +1473,7 @@ try {
       ok(await admin.from("bid_purge_operations").delete().in("id", opIds));
     }
     ok(await admin.from("bid_import_receipts").delete().in("actor_id", users));
+    ok(await admin.from("client_provisions").delete().in("created_by", users));
     ok(await admin.from("account_events").delete().in("account_id", users));
     ok(
       await admin

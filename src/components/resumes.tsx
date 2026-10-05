@@ -1,11 +1,11 @@
 "use client";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, FileText, Search, Mail, Phone, Archive, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import type { WorkspaceData } from "@/lib/data";
 import type { Row } from "@/lib/database.types";
-import { usd, effectiveRate } from "@/lib/domain";
+import { usd, effectiveRate, validateUpload } from "@/lib/domain";
 import { saveResumeAssignment, archiveResumeAssignment } from "@/app/(workspace)/actions";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
@@ -22,6 +22,7 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
   const [profileId, setProfileId] = useState(resume?.profile_id ?? "");
   const [savedAssignment, setSavedAssignment] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ phase: string; value: number } | null>(null);
   const [uploadError, setUploadError] = useState("");
@@ -31,7 +32,7 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
   const hasBidHistory = !!resume && data.bids.some((b) => b.resume_id === resume.id);
   const profiles = data.candidateProfiles.filter((p) => !p.archived && (!membership || p.workspace_id === membership.workspace_id));
   return <Dialog open={open} onOpenChange={(next) => { if (pending || uploading) return; setOpen(next); if (!next) { setSavedAssignment(""); setFile(null); setUploadError(""); } }}>
-    <DialogTrigger asChild><Button variant={resume ? "outline" : "default"} size={resume ? "sm" : "default"} disabled={!data.bidders.some((b) => !b.archived) || !data.candidateProfiles.some((p) => !p.archived)}>{!resume && <Plus size={16} />} {resume ? "Edit assignment" : "Assign profile"}</Button></DialogTrigger>
+    <DialogTrigger asChild><Button variant={resume ? "outline" : "default"} size={resume ? "sm" : "default"} disabled={pending || uploading || !data.bidders.some((b) => !b.archived) || !data.candidateProfiles.some((p) => !p.archived)}>{!resume && <Plus size={16} />} {resume ? "Edit assignment" : "Assign profile"}</Button></DialogTrigger>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
       <DialogHeader><DialogTitle>{resume ? "Edit bidder assignment" : "Assign a profile to a bidder"}</DialogTitle><DialogDescription>Shared candidate details live in Profiles. Each bidder assignment has its own contact details and private PDF.</DialogDescription></DialogHeader>
       <form className="space-y-4" onSubmit={(event) => {
@@ -40,6 +41,10 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
         start(async () => {
         setUploadError("");
         if (!resume?.file_id && !file) { setUploadError("Choose a PDF resume file before assigning this profile."); return; }
+        if (file) {
+          try { validateUpload("resume", file.type, file.size); }
+          catch (error) { setUploadError(error instanceof Error ? error.message : "Choose a valid PDF."); return; }
+        }
         const result = await saveResumeAssignment(form);
         if (result.error || !result.data) { toast.error(result.error ?? "Could not save assignment."); return; }
         const id = result.data as string;
@@ -63,6 +68,7 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
         toast.success(resume?.file_id && !file ? "Assignment saved" : "Assignment and resume saved");
         router.refresh();
         setOpen(false);
+        setSavedAssignment("");
         setFile(null);
         });
       }}>
@@ -83,8 +89,8 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
         <Field label="Rate override per bid (USD)" name="rate" type="number" min="0" step="0.01" defaultValue={resume?.rate_override_cents != null ? resume.rate_override_cents / 100 : ""} placeholder={membership?.default_rate_cents != null ? `Inherit ${usd(membership.default_rate_cents)}` : "Use bidder default"} />
         <div className="space-y-2 rounded-xl border border-dashed p-4">
           <label className="block text-sm font-medium" htmlFor="assignment-resume-file">Resume PDF {resume?.file_id && <span className="text-xs font-normal text-muted-foreground">(optional replacement)</span>}</label>
-          <input id="assignment-resume-file" type="file" accept="application/pdf" required={!resume?.file_id} disabled={pending || uploading} aria-label="Choose resume file" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadError(""); }} className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-xs file:font-medium" />
-          {file && <div className="flex items-center justify-between text-xs text-muted-foreground"><span className="truncate">{file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB</span><Button type="button" variant="ghost" size="sm" disabled={pending || uploading} onClick={() => setFile(null)}>Remove</Button></div>}
+          <input ref={fileInput} id="assignment-resume-file" type="file" accept="application/pdf" required={!resume?.file_id} disabled={pending || uploading} aria-label="Choose resume file" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadError(""); }} className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-xs file:font-medium" />
+          {file && <div className="flex items-center justify-between text-xs text-muted-foreground"><span className="truncate">{file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB</span><Button type="button" variant="ghost" size="sm" disabled={pending || uploading} onClick={() => { setFile(null); if (fileInput.current) fileInput.current.value = ""; setUploadError(""); }}>Remove</Button></div>}
           {!file && resume?.file_id && <p className="text-xs text-muted-foreground">Current PDF stays active if a replacement upload fails.</p>}
           <p className="text-xs text-muted-foreground">PDF only, up to 10 MB. The assignment becomes available for bids after verification.</p>
           {uploadProgress && <div role="status" className="text-xs">{uploadProgress.phase}… {uploadProgress.value}%</div>}

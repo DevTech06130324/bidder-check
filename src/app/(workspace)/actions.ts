@@ -668,24 +668,38 @@ export async function importBids(
   date: string,
   rows: import("@/lib/sheets").ImportRow[],
   request: string,
-) {
-  return perform(async () => {
+): Promise<{ data?: { ids?: string[]; purgedCount?: number; errors?: import("@/lib/sheets").ImportError[]; date: string; bidder: string; resume: string }; error?: string; uncertain?: boolean }> {
+  let sent = false;
+  try {
     if (Buffer.byteLength(JSON.stringify(rows)) > 2 * 1024 * 1024)
       throw new Error("Import payload is too large");
-    return (await rpc("import_bids", {
+    const args = {
       p_resume: z.uuid().parse(resume),
       p_date: date,
       p_rows: rows.map((row) => ({ ...row, url: normalizeJobUrl(row.url) })),
       p_request: z.uuid().parse(request),
-    })) as {
+    };
+    const { supabase } = await getContext();
+    sent = true;
+    const { data, error } = await supabase.rpc("import_bids", args);
+    if (error) {
+      // SQL/PostgREST rejections have a definite outcome; transport failures do not.
+      const definite = /^(?:[0-9A-Z]{5}|PGRST\d{3})$/.test(error.code ?? "");
+      return { error: error.message, uncertain: !definite };
+    }
+    if (!data) return { error: "The import response was incomplete. Retry the same request.", uncertain: true };
+    revalidatePath("/", "layout");
+    return { data: data as {
       ids?: string[];
       purgedCount?: number;
       errors?: import("@/lib/sheets").ImportError[];
       date: string;
       bidder: string;
       resume: string;
-    };
-  });
+    }, uncertain: false };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not complete import.", uncertain: sent };
+  }
 }
 
 const bidTargets = z

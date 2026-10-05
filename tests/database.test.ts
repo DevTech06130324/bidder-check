@@ -2040,3 +2040,21 @@ it("creates admin signup alerts only for public pending clients and defaults new
     [admin, publicClient],
   )).rejects.toThrow("Notification not found or resolved");
 });
+
+it("does not deliver a queued admin alert after its device belongs to another user", async () => {
+  await asUser(other);
+  const subscription = (await db.query<{ id: string }>(
+    "select public.save_push_subscription('https://push.example.test/device','key','auth') id",
+  )).rows[0].id;
+  await db.exec("reset role");
+  await db.query("insert into auth.users(id,email) values('00000000-0000-4000-8000-000000009020','device-alert@example.test')");
+  await db.exec("set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  await db.query("select public.queue_notification_pushes()");
+  const queued = (await db.query("select id from public.push_attempts where subscription_id=$1", [subscription])).rows;
+  expect(queued).toHaveLength(1);
+  await asUser(bidder);
+  await db.query("select public.save_push_subscription('https://push.example.test/device','new-key','new-auth')");
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  expect((await db.query("select id from public.push_attempts where subscription_id=$1", [subscription])).rows).toHaveLength(0);
+  expect((await db.query("select * from public.claim_push_attempts(100)")).rows).toHaveLength(0);
+});

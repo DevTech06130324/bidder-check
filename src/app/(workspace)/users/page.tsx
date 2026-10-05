@@ -5,5 +5,5 @@ export default async function Users({ searchParams }: { searchParams: Promise<{ 
   const data = await getWorkspaceData();
   if (data.profile.role === "bidder") redirect("/dashboard");
   const params = await searchParams;
-  return <People data={data} initialTab={params.tab === "pending" ? "pending" : "active"} highlightId={params.highlight} />;
+  return <People data={data} initialTab={params.tab === "pending" || params.tab === "archived" ? params.tab : "active"} highlightId={params.highlight} />;
 }

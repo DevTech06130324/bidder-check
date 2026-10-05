@@ -11,7 +11,6 @@ export const authenticate = unavailable,
   saveCandidateProfileRules = unavailable,
   previewCandidateRetention = unavailable,
   archiveCandidateProfile = unavailable,
-  saveResumeAssignment = unavailable,
   archiveResumeAssignment = unavailable,
   updateBidder = unavailable,
   updateClient = unavailable,
@@ -25,9 +24,20 @@ export const authenticate = unavailable,
   resubmitBidAction = unavailable,
   setBidInterviewAction = unavailable,
   saveSettings = unavailable,
-  prepareUpload = unavailable,
-  finalizeUpload = unavailable,
   getFileUrl = unavailable;
+export async function saveResumeAssignment(form: FormData) {
+  if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
+  window.dispatchEvent(new CustomEvent("assignment-save", { detail: String(form.get("id") ?? "") }));
+  return { data: String(form.get("id") || crypto.randomUUID()) };
+}
+export async function prepareUpload(_kind: string, target: string) {
+  if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
+  return { data: { id: target, storage_path: "fixture/resume.pdf" } };
+}
+export async function finalizeUpload(id: string) {
+  if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
+  return { data: id };
+}
 export const getBidHistory = async () => ({ data: [] });
 
 let reads = 0;
@@ -93,7 +103,10 @@ export async function checkBidImport(
   const { validateImportRows } = await import("@/lib/sheets");
   return { data: validateImportRows(rows) };
 }
-export const importBids = unavailable;
+export async function importBids() {
+  if (new URLSearchParams(location.search).has("lost-import")) return { error: "fetch failed", uncertain: true };
+  return unavailable();
+}
 
 export async function trashBid(id: string, deleted: boolean) {
   const { fixture } = await import("./sample-data");

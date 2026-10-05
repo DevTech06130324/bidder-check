@@ -55,6 +55,10 @@ export async function POST(request: Request) {
           .eq("id", notification?.user_id ?? attempt.user_id)
           .maybeSingle();
         if (recipientError) throw new Error(recipientError.message);
+        const { data: device, error: deviceError } = await admin.from("push_subscriptions")
+          .select("user_id,p256dh,auth_secret")
+          .eq("endpoint", attempt.endpoint).maybeSingle();
+        if (deviceError) throw new Error(deviceError.message);
         let workspaceActive = true;
         if (notification?.kind === "message" && recipient?.role === "bidder") {
           const { data: membership, error: membershipError } = await admin.from("bidders").select("workspace_id,archived").eq("user_id", notification.user_id).maybeSingle();
@@ -70,6 +74,7 @@ export async function POST(request: Request) {
           workspaceActive = !!membership && !membership.archived && !!owner && !owner.archived && owner.approval_status === "approved";
         }
         const eligible = !!notification && !notification.resolved_at && !!recipient && !recipient.archived &&
+          device?.user_id === notification.user_id && device.p256dh === attempt.p256dh && device.auth_secret === attempt.auth_secret &&
           workspaceActive &&
           ((notification.kind === "message" && recipient.role === "bidder") ||
             (notification.kind === "client_signup" && recipient.role === "admin"));

@@ -57,9 +57,9 @@ process_candidate_retention: { Args: { p_limit: number | null }; Returns: unknow
 process_due_messages: { Args: { p_now: string | null; p_limit: number | null }; Returns: unknown };
 queue_notification_pushes: { Args: Record<string, never>; Returns: number };
 recent_bid_purges: { Args: Record<string, never>; Returns: unknown };
-reserve_client_account: { Args: { p_email: string | null; p_name: string | null }; Returns: string };
 record_account_event: { Args: { p_account: string | null; p_event: string | null }; Returns: undefined };
 require_manager: { Args: { w: string | null }; Returns: undefined };
+reserve_client_account: { Args: { p_email: string | null; p_name: string | null }; Returns: string };
 reset_application_library: { Args: { p_workspaces: string[] | null; p_expected_fingerprint: string | null; p_actor: string | null }; Returns: unknown };
 resubmit_bid: { Args: { p_bid: string | null; p_version: number | null }; Returns: unknown };
 retained_aggregate_summary: { Args: { p_from: string | null; p_to: string | null }; Returns: unknown };

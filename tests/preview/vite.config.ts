@@ -3,9 +3,14 @@ import { fileURLToPath } from "node:url";
 const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 export default defineConfig({
   root: here("./"),
+  define: {
+    "process.env.NEXT_PUBLIC_SUPABASE_URL": JSON.stringify("https://upload.example.test"),
+    "process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": JSON.stringify("fixture-key"),
+  },
   server: { host: "127.0.0.1", port: 3001, fs: { allow: [here("../../")] } },
   resolve: {
     alias: [
+      { find: "@/lib/client", replacement: here("./client.ts") },
       { find: "@/app/(workspace)/actions", replacement: here("./actions.ts") },
       { find: "@/app/auth/actions", replacement: here("./actions.ts") },
       { find: "next/navigation", replacement: here("./navigation.ts") },

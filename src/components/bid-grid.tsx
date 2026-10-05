@@ -60,6 +60,7 @@ export function BidGrid({
     focusFrame = useRef(0),
     dragging = useRef(false),
     busy = useRef(false),
+    completedEdit = useRef(false),
     editor = useRef<HTMLInputElement & HTMLSelectElement>(null);
   const rows = table.getRowModel().rows,
     columns = table.getVisibleLeafColumns();
@@ -112,6 +113,7 @@ export function BidGrid({
     )
       return;
     setSaved("");
+    completedEdit.current = false;
     setEdit({
       id: bid.id,
       field,
@@ -129,7 +131,7 @@ export function BidGrid({
     if (point) focus(point);
   }
   async function save(next?: Point) {
-    if (!edit || busy.current || edit.latest) return;
+    if (!edit || busy.current || completedEdit.current || edit.latest) return;
     busy.current = true;
     setSaving(true);
     try {
@@ -148,6 +150,9 @@ export function BidGrid({
           latest: result.data.row,
         });
       else if (result.data?.ok) {
+        // React may blur the old editor before committing setEdit(null).
+        // Prevent that blur from resubmitting the version already saved.
+        completedEdit.current = true;
         onRow(result.data.row);
         setEdit(null);
         onBusy(false);
