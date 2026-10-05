@@ -64,8 +64,11 @@ test("bid table search, filters and details show the correct application", async
     page.getByRole("button", { name: "Mark as applied" }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("Upload automatically records the application"),
+    page
+      .getByRole("dialog")
+      .getByText("Waiting for client review before proof upload."),
   ).toBeVisible();
+  await expect(page.getByLabel("Choose screenshot")).toBeDisabled();
 });
 test("resume details and earnings render their scoped data", async ({
   page,
