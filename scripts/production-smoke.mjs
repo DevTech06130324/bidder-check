@@ -54,6 +54,16 @@ try {
       .single(),
   );
   assert.deepEqual(profile, { role: "client", approval_status: "pending" });
+  const activeAdmins = ok(await admin.from("profiles").select("id").eq("role", "admin").eq("archived", false));
+  const alerts = ok(await admin.from("inbox_notifications").select("user_id,kind,href,resolved_at")
+    .eq("client_id", signup.user.id));
+  assert.deepEqual(alerts.map(row => row.user_id).sort(), activeAdmins.map(row => row.id).sort());
+  for (const alert of alerts) {
+    assert.equal(alert.kind, "client_signup");
+    assert.equal(alert.resolved_at, null);
+    assert.equal(alert.href, `/users?tab=pending&highlight=${signup.user.id}`);
+  }
+  assert.deepEqual(ok(await client.from("inbox_notifications").select("id")), []);
   assert.deepEqual(ok(await client.from("workspaces").select("id")), []);
   assert.deepEqual(ok(await client.from("bids").select("id")), []);
   for (const [name, args] of [
@@ -122,7 +132,7 @@ try {
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/login/);
   console.log(
-    "PASS production: designated admin active; signup metadata cannot grant roles/approval; pending access denied including spreadsheet and bulk/purge RPCs; approval routing, password change and sign-out work",
+    "PASS production: designated admin active; signup creates private approval alerts; metadata cannot grant roles/approval; pending access denied including spreadsheet and bulk/purge RPCs; approval routing, password change and sign-out work",
   );
 } finally {
   await browser?.close();

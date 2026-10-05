@@ -26,6 +26,7 @@ const pages: Record<string, React.ReactNode> = {
   "/resumes": <ResumeLibrary data={fixture} />,
   "/profiles": <CandidateProfileLibrary data={fixture} />,
   "/users": <People data={fixture} />,
+  "/admin-notifications": <Notifications data={{ ...fixture, profile: { ...fixture.profile, role: "admin" } }} initialInbox={[]} initialMessages={[]} />,
   "/admin-users": (
     <People
       data={{

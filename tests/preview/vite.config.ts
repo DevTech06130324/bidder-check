@@ -6,6 +6,7 @@ export default defineConfig({
   define: {
     "process.env.NEXT_PUBLIC_SUPABASE_URL": JSON.stringify("https://upload.example.test"),
     "process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": JSON.stringify("fixture-key"),
+    "process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY": JSON.stringify("AQID"),
   },
   server: { host: "127.0.0.1", port: 3001, fs: { allow: [here("../../")] } },
   resolve: {

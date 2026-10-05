@@ -50,17 +50,22 @@ export function Notifications({ data, initialInbox, initialMessages }: { data: W
     });
   }, []);
   async function enablePush() {
+    try {
     const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
     if (!publicKey || !("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { toast.error("Browser push is unavailable. Your in-app inbox remains active."); return; }
     if (Notification.permission === "denied") { toast.error("Notifications are blocked in this browser. Allow them in browser settings to enable push."); return; }
     const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
     if (permission !== "granted") { toast.message("Push disabled; messages will remain in your inbox."); return; }
-    const registration = await navigator.serviceWorker.register("/push-worker.js");
+    await navigator.serviceWorker.register("/push-worker.js");
+    const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: decodeKey(publicKey) });
     const json = subscription.toJSON();
     if (!json.endpoint) { toast.error("This browser did not provide a push endpoint."); return; }
     const result = await savePushSubscriptionAction({ endpoint: json.endpoint, keys: json.keys });
     if (result.error) toast.error(result.error); else toast.success("Browser notifications enabled on this device");
+    } catch {
+      toast.error("Could not enable browser notifications. Retry or check browser settings; your inbox remains active.");
+    }
   }
   async function disablePush() {
     if (!("serviceWorker" in navigator)) { toast.message("This browser does not have a push subscription to remove."); return; }
