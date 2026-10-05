@@ -77,3 +77,15 @@ test("invalid confirmation links show a recoverable error", async ({
     page.getByRole("alert").filter({ hasText: "invalid or expired" }),
   ).toBeVisible();
 });
+
+test("notification cron authenticates its bearer without login and push assets are public", async ({ request }) => {
+  const cron = await request.post("/api/cron/notifications", { maxRedirects: 0 });
+  expect(cron.status()).toBe(401);
+  expect(await cron.json()).toEqual({ error: "Unauthorized" });
+  const worker = await request.get("/push-worker.js", { maxRedirects: 0 });
+  expect(worker.status()).toBe(200);
+  expect(await worker.text()).toContain('addEventListener("push"');
+  const manifest = await request.get("/manifest.webmanifest", { maxRedirects: 0 });
+  expect(manifest.status()).toBe(200);
+  expect(await manifest.json()).toMatchObject({ name: "Bidder Check" });
+});

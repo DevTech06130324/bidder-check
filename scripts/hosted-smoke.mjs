@@ -481,7 +481,17 @@ try {
     }),
   );
   assert.ok(messageId);
-  ok(await admin.rpc("process_due_messages", { p_now: new Date().toISOString(), p_limit: 100 }));
+  const notificationWorker = await fetch(`${origin}/api/cron/notifications`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      authorization: `Bearer ${process.env.NOTIFICATION_WORKER_SECRET}`,
+      ...(process.env.SMOKE_VERCEL_BYPASS ? { "x-vercel-protection-bypass": process.env.SMOKE_VERCEL_BYPASS } : {}),
+    },
+  });
+  assert.equal(notificationWorker.status, 200);
+  assert.match(notificationWorker.headers.get("content-type") ?? "", /application\/json/);
+  assert.equal(typeof (await notificationWorker.json()).schedule.occurrences, "number");
   const inboxMessage = ok(
     await bidder
       .from("inbox_notifications")

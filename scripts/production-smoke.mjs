@@ -32,6 +32,15 @@ try {
   );
   assert.equal(designated.role, "admin");
   assert.equal(designated.archived, false);
+  const unauthenticatedWorker = await fetch(`${origin}/api/cron/notifications`, { method: "POST", redirect: "manual" });
+  assert.equal(unauthenticatedWorker.status, 401);
+  const workerResponse = await fetch(`${origin}/api/cron/notifications`, {
+    method: "POST", redirect: "manual",
+    headers: { authorization: `Bearer ${process.env.NOTIFICATION_WORKER_SECRET}` },
+  });
+  assert.equal(workerResponse.status, 200);
+  assert.match(workerResponse.headers.get("content-type") ?? "", /application\/json/);
+  assert.equal(typeof (await workerResponse.json()).schedule.occurrences, "number");
   const signup = ok(
     await client.auth.signUp({
       email,
