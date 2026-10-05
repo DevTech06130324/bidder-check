@@ -9,7 +9,7 @@ const credentials = z.object({
 });
 export async function authenticate(
   mode: string,
-  values: { email: string; password: string; name?: string },
+  values: { email: string; password: string; name?: string; next?: string },
 ) {
   const supabase = await createClient();
   if (mode === "forgot") {
@@ -57,10 +57,18 @@ export async function authenticate(
     password: values.password,
   });
   if (error) return { error: error.message };
+  const next = values.next;
+  // Only allow same-origin relative paths. This preserves protected deep links
+  // (including notification IDs) without creating an open redirect.
+  if (next?.startsWith("/") && !next.startsWith("//") && !next.includes("\\")) {
+    redirect(next);
+  }
   redirect("/dashboard");
 }
 export async function signOut() {
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user) await supabase.rpc("delete_all_push_subscriptions", {});
   await supabase.auth.signOut();
   redirect("/auth/login");
 }

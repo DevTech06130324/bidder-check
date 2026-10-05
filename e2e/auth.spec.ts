@@ -27,6 +27,7 @@ test("protected routes lead to login and client registration is discoverable", a
 }) => {
   await page.goto("/dashboard");
   await expect(page).toHaveURL(/\/auth\/login/);
+  await expect(page.locator('input[name="next"]')).toHaveValue("/dashboard");
   await expect(
     page.getByRole("heading", { name: "Welcome back." }),
   ).toBeVisible();
@@ -43,6 +44,13 @@ test("protected routes lead to login and client registration is discoverable", a
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
+});
+test("login preserves a notification deep link for post-auth navigation", async ({
+  page,
+}) => {
+  const destination = "/notifications?notification=notice-123";
+  await page.goto(`/auth/login?next=${encodeURIComponent(destination)}`);
+  await expect(page.locator('input[name="next"]')).toHaveValue(destination);
 });
 test("password visibility and recovery navigation work", async ({ page }) => {
   await page.goto("/auth/login");

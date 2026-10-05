@@ -28,6 +28,13 @@ async function finalizeResumeFile(resumeId: string, actor = client): Promise<str
   ]);
   return upload;
 }
+async function approveBidAsClient(bidId: string) {
+  await asUser(client);
+  const version = (
+    await db.query<{ version: number }>("select version from public.bids where id=$1", [bidId])
+  ).rows[0].version;
+  await db.query("select public.review_bid($1,'approved',null,$2)", [bidId, version]);
+}
 beforeAll(async () => {
   db = new PGlite();
   await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
@@ -104,6 +111,8 @@ beforeAll(async () => {
       [resume],
     )
   ).rows[0].id;
+  await approveBidAsClient(bid);
+  await asUser(bidder);
 }, 60000);
 afterAll(async () => {
   await db?.close();
@@ -280,6 +289,24 @@ it("enforces profile-wide company limits and literal restrictions", async () => 
   await db.exec("reset role");
   await db.exec(`delete from public.bid_events where bid_id in (select id from public.bids where resume_id='${assignment}'); delete from public.bids where resume_id='${assignment}'; update public.resumes set file_id=null where id='${assignment}'; delete from public.files where resume_id='${assignment}'; delete from public.resumes where id='${assignment}'; delete from public.candidate_profiles where id='${profileId}';`);
 });
+it("bulk review is atomic and rejects stale selected versions", async () => {
+  await asUser(bidder);
+  const first = (await db.query<{ id: string }>("select public.save_bid(null,$1,'Review One','Engineer','https://review.test/one','Indeed','remote','open') id", [resume])).rows[0].id;
+  const second = (await db.query<{ id: string }>("select public.save_bid(null,$1,'Review Two','Engineer','https://review.test/two','Indeed','remote','open') id", [resume])).rows[0].id;
+  await asUser(client);
+  const versions = (await db.query<{id:string;version:number}>("select id,version from public.bids where id=any($1::uuid[]) order by id", [[first,second]])).rows;
+  const stale = versions.map((row,index)=>({id:row.id,version:row.version+(index===1?1:0)}));
+  await expect(db.query("select public.review_bids($1::jsonb,'approved','')", [JSON.stringify(stale)])).rejects.toThrow(/changed/i);
+  const unchanged=(await db.query<{review_status:string}>("select review_status from public.bids where id=any($1::uuid[])",[ [first,second] ])).rows;
+  expect(unchanged.every(row=>row.review_status==="pending")).toBe(true);
+  await db.query("select public.review_bids($1::jsonb,'approved','')",[JSON.stringify(versions)]);
+  const approved=(await db.query<{review_status:string}>("select review_status from public.bids where id=any($1::uuid[])",[ [first,second] ])).rows;
+  expect(approved.every(row=>row.review_status==="approved")).toBe(true);
+  await db.exec("reset role");
+  await db.query("delete from public.bid_events where bid_id=any($1::uuid[])",[[first,second]]);
+  await db.query("delete from public.bids where id=any($1::uuid[])",[[first,second]]);
+});
+
 it("verified uploads apply atomically, replace proof, reject corrected content and preserve earnings", async () => {
   await asUser(bidder);
   await expect(
@@ -446,6 +473,8 @@ it("isolates peers, accepts explicit zero rates, and locks applied resume assign
       [r],
     )
   ).rows[0].id;
+  await approveBidAsClient(fresh);
+  await asUser(peer);
   const proof = (
     await db.query<{ id: string }>(
       "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) id",
@@ -700,10 +729,12 @@ it("found time cannot be supplied or changed through APIs", async () => {
       [bid],
     )
   ).rows[0].found_at;
-  await db.query(
-    "select public.save_bid($1,$2,'Updated','Engineer','https://example.com/jobs?id=1','Indeed','remote','open')",
-    [bid, resume],
-  );
+  await expect(
+    db.query(
+      "select public.save_bid($1,$2,'Updated','Engineer','https://example.com/jobs?id=1','Indeed','remote','open')",
+      [bid, resume],
+    ),
+  ).rejects.toThrow(/applied bid details/i);
   expect(
     (
       await db.query<{ found_at: string }>(
@@ -1162,6 +1193,8 @@ it("purge rejects expired/changed snapshots, isolates scope and cleans unfinishe
     ).rows[0].id;
   const one = await make("one"),
     two = await make("two");
+  await approveBidAsClient(one);
+  await asUser(bidder);
   const proof = (
     await db.query<{ id: string }>(
       "select public.prepare_file('screenshot',$1,'unfinished.png','image/png',100) id",
@@ -1627,6 +1660,8 @@ it("aggregates CT reporting before retention and queues screenshot cleanup", asy
       [assignmentId],
     )
   ).rows[0].id;
+  await approveBidAsClient(retentionBid);
+  await asUser(bidder);
   const proof = (
     await db.query<{ id: string }>(
       "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) id",
@@ -1655,6 +1690,7 @@ it("aggregates CT reporting before retention and queues screenshot cleanup", asy
     "select public.update_candidate_profile_rules($1,3,1,'{}','{}','{}',1)",
     [profileId],
   );
+  await db.query("select public.set_bid_interview($1,true,clock_timestamp(),'Interview details','')", [retentionBid]);
   await db.exec("set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
   const result = (
     await db.query<{ result: { deletedApplications: number; storageTasksQueued: number } }>(
@@ -1665,13 +1701,15 @@ it("aggregates CT reporting before retention and queues screenshot cleanup", asy
   await db.exec("reset role");
   expect((await db.query("select id from public.bids where id=$1", [retentionBid])).rows).toHaveLength(0);
   const history = (
-    await db.query<{ metric: string; record_count: number; earned_cents: number }>(
-      "select metric,record_count,earned_cents from public.retained_bid_daily_aggregates where profile_id=$1 order by metric",
+    await db.query<{ metric: string; record_count: number; earned_cents: number; interview_count: number; tracked_count: number }>(
+      "select metric,record_count,earned_cents,interview_count,tracked_count from public.retained_bid_daily_aggregates where profile_id=$1 order by metric",
       [profileId],
     )
   ).rows;
   expect(history.map((row) => row.metric)).toEqual(["applied_activity", "earning", "found"]);
   expect(history.find((row) => row.metric === "earning")?.earned_cents).toBe(250);
+  expect(history.find((row) => row.metric === "earning")?.interview_count).toBe(1);
+  expect(history.find((row) => row.metric === "earning")?.tracked_count).toBe(1);
   expect((await db.query("select id from public.files where id=$1", [proof])).rows).toHaveLength(0);
   expect((await db.query("select id from public.files where resume_id=$1", [assignmentId])).rows).toHaveLength(1);
   expect((await db.query("select id from public.storage_cleanup_tasks where operation_id is null and storage_path is not null")).rows).toHaveLength(1);
@@ -1689,6 +1727,133 @@ it("subtracts retention as CT calendar months across month-end and daylight savi
     )
   ).rows[0].cutoff;
   expect(new Date(dst).toISOString()).toBe("2026-02-15T09:30:00.000Z");
+});
+
+it("blocks bidder screenshot uploads until client approval and lets only managers record interviews", async () => {
+  await asUser(bidder);
+  const newBidId = (
+    await db.query<{ id: string }>(
+      "select public.save_bid(null,$1,'Review Co','Data Analyst','https://example.com/review-job','Direct','remote','open') id",
+      [resume],
+    )
+  ).rows[0].id;
+  const newBid = (
+    await db.query<{ id: string; version: number; review_status: string }>(
+      "select id,version,review_status from public.bids where id=$1",
+      [newBidId],
+    )
+  ).rows[0];
+  expect(newBid.review_status).toBe("pending");
+  await expect(
+    db.query("select public.prepare_file('screenshot',$1,'review.png','image/png',100)", [newBid.id]),
+  ).rejects.toThrow(/approval/i);
+
+  await asUser(client);
+  await db.query("select public.review_bid($1,'approved',null,$2)", [newBid.id, newBid.version]);
+  await asUser(bidder);
+  const upload = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('screenshot',$1,'review.png','image/png',100) id",
+      [newBid.id],
+    )
+  ).rows[0].id;
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  await db.query("select public.finalize_verified_file($1,$2,$3)", [upload, "c".repeat(64), bidder]);
+  await asUser(bidder);
+  await expect(
+    db.query("select public.set_bid_interview($1,true,null,'Private note',null)", [newBid.id]),
+  ).rejects.toThrow(/access denied/i);
+  await asUser(client);
+  await db.query("select public.set_bid_interview($1,true,'2026-10-06T15:00:00Z','Panel interview',null)", [newBid.id]);
+  await asUser(bidder);
+  const result = (
+    await db.query<{ interview_scheduled: boolean; interview_notes: string }>(
+      "select interview_scheduled,interview_notes from public.bids where id=$1",
+      [newBid.id],
+    )
+  ).rows[0];
+  expect(result).toEqual({ interview_scheduled: true, interview_notes: "Panel interview" });
+});
+it("manager-created bids are approved and identity edits invalidate prepared proof", async () => {
+  await asUser(client);
+  const created = (
+    await db.query<{ id: string }>(
+      "select public.save_bid(null,$1,'Client Review Co','Programmer','https://example.com/client-review','Direct','onsite','open') id",
+      [resume],
+    )
+  ).rows[0].id;
+  const state = (
+    await db.query<{ version: number; review_status: string; review_revision: number }>(
+      "select version,review_status,review_revision from public.bids where id=$1",
+      [created],
+    )
+  ).rows[0];
+  expect(state.review_status).toBe("approved");
+  await asUser(bidder);
+  const proof = (
+    await db.query<{ id: string }>(
+      "select public.prepare_file('screenshot',$1,'stale.png','image/png',100) id",
+      [created],
+    )
+  ).rows[0].id;
+  await db.query("select public.update_bid_cell($1,'company','Updated Co',$2)", [created, state.version]);
+  expect(
+    (
+      await db.query<{ review_status: string; review_revision: number }>(
+        "select review_status,review_revision from public.bids where id=$1",
+        [created],
+      )
+    ).rows[0],
+  ).toEqual({ review_status: "pending", review_revision: state.review_revision + 1 });
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  await expect(
+    db.query("select public.finalize_verified_file($1,$2,$3)", [proof, "d".repeat(64), bidder]),
+  ).rejects.toThrow(/approval changed/i);
+});
+
+it("publishes scheduled messages once to scoped inboxes and resolves Central DST times", async () => {
+  await asUser(client);
+  await db.query<{ id: string }>(
+      "select public.save_client_message(null,$1,'Shift update','Please review the new roles.','all','{}','once',clock_timestamp(),null,'{}') id",
+      [workspace],
+    );
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  const published = await db.query("select public.process_due_messages(clock_timestamp()+interval '5 seconds',10) result");
+  await db.query("select public.process_due_messages(clock_timestamp()+interval '6 seconds',10)");
+  await asUser(bidder);
+  expect(published.rows[0]).toEqual({ result: { occurrences: 1 } });
+  const inbox = await db.query<{ title: string; body: string }>(
+    "select title,body from public.inbox_notifications where user_id=auth.uid()",
+  );
+  expect(inbox.rows).toEqual([{ title: "Shift update", body: "Please review the new roles." }]);
+  await expect(
+    db.query("select public.mark_notification_read($1,true)", ["00000000-0000-4000-8000-000000000099"]),
+  ).rejects.toThrow(/not found/i);
+
+  await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
+  const springForward = (
+    await db.query<{ local_stamp: string }>(
+      "select to_char(public.message_occurrence_at('2026-03-08','02:30') at time zone 'America/Chicago','YYYY-MM-DD HH24:MI:SS') local_stamp",
+    )
+  ).rows[0].local_stamp;
+  const fallUtc = (
+    await db.query<{ value: string }>(
+      "select to_char(public.message_occurrence_at('2026-11-01','01:30') at time zone 'UTC','YYYY-MM-DD HH24:MI:SS') value",
+    )
+  ).rows[0].value;
+  expect(fallUtc).toBe("2026-11-01 06:30:00");
+  expect(springForward).toContain("03:30");
+});
+
+it("editing a paused recurring notification does not resume delivery", async () => {
+  await asUser(client);
+  const id = (await db.query<{id:string}>("select public.save_client_message(null,$1,'Daily','Initial','all','{}','daily',null,'09:00','{1}',false) id",[workspace])).rows[0].id;
+  await db.query("select public.set_message_status($1,'paused')",[id]);
+  await db.query("select public.save_client_message($1,$2,'Daily','Edited while paused','all','{}','daily',null,'10:00','{1}',false)",[id,workspace]);
+  const row=(await db.query<{status:string;next_at:string|null}>("select status,next_at from public.client_messages where id=$1",[id])).rows[0];
+  expect(row).toEqual({status:"paused",next_at:null});
+  await db.exec("reset role");
+  await db.query("delete from public.client_messages where id=$1",[id]);
 });
 
 it("resets only an explicitly inventoried application library and preserves accounts", async () => {

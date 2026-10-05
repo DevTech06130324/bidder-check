@@ -11,9 +11,11 @@ type Values = { name: string; email: string; password: string };
 export function AuthForm({
   mode,
   error: initialError,
+  next,
 }: {
   mode: "login" | "signup" | "forgot" | "update";
   error?: string;
+  next?: string;
 }) {
   const {
     register,
@@ -31,7 +33,7 @@ export function AuthForm({
     start(async () => {
       setResult({});
       try {
-        const res = await authenticate(mode, values);
+        const res = await authenticate(mode, { ...values, next });
         if (res) setResult(res);
       } catch (error) {
         if (error instanceof Error && error.message === "NEXT_REDIRECT")
@@ -42,6 +44,9 @@ export function AuthForm({
   );
   return (
     <form onSubmit={submit} className="space-y-5">
+      {mode === "login" && next && (
+        <input type="hidden" name="next" value={next} />
+      )}
       {isSignup && (
         <div className="space-y-2">
           <Label htmlFor="name">Your name</Label>

@@ -20,11 +20,15 @@ import {
   ArrowUpRight,
   ChevronRight,
   ShieldCheck,
+  MessageSquareText,
+  ChartNoAxesCombined,
+  Bell,
 } from "lucide-react";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./ui/sheet";
 import { signOut } from "@/app/auth/actions";
+import { getInboxNotifications } from "@/app/(workspace)/actions";
 import { initials } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 import type { Row } from "@/lib/database.types";
@@ -35,26 +39,41 @@ const links = [
   { href: "/profiles", label: "Candidate profiles", icon: ContactRound },
   { href: "/users", label: "People", icon: Users },
   { href: "/earnings", label: "Earnings", icon: Wallet },
+  { href: "/interviews", label: "Interview performance", icon: ChartNoAxesCombined },
+  { href: "/notifications", label: "Notifications", icon: MessageSquareText },
 ];
 export function Shell({
   children,
   profile,
   workspace,
+  unreadCount = 0,
 }: {
   children: React.ReactNode;
   profile: Row<"profiles">;
   workspace: string;
+  unreadCount?: number;
 }) {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mobile, setMobile] = useState(false);
+  const [unread, setUnread] = useState(unreadCount);
   const { resolvedTheme, setTheme } = useTheme();
   useEffect(() => {
     const refresh = () => router.refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [router]);
+  useEffect(() => {
+    if (profile.role !== "bidder") return;
+    const update = async () => {
+      const result = await getInboxNotifications();
+      if (!result.error) setUnread((result.data ?? []).filter((row) => !row.read_at).length);
+    };
+    const timer = window.setInterval(() => void update(), 30000);
+    window.addEventListener("focus", update);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", update); };
+  }, [profile.role]);
   const nav = (small = false) => (
     <div className="flex h-full flex-col">
       <Link href="/dashboard" className="px-5 py-7">
@@ -204,6 +223,7 @@ export function Shell({
             </span>
           </div>
           <div className="ml-auto flex items-center gap-3">
+            {profile.role === "bidder" && <Link href="/notifications" aria-label={`${unread} unread notifications`} className="relative rounded-md p-2 text-muted-foreground hover:bg-secondary"><Bell size={17}/>{unread>0&&<span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">{unread>9?"9+":unread}</span>}</Link>}
             <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] text-muted-foreground sm:flex">
               <span className="size-1.5 rounded-full bg-emerald-500" /> Private
               workspace

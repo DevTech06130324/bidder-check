@@ -86,6 +86,11 @@ export function ScreenshotCell({
           Retry preview
         </Button>
       )}
+      {!bid.deleted_at && bid.review_status !== "approved" && (
+        <p className="text-[10px] leading-4 text-muted-foreground">
+          {bid.review_status === "pending" ? "Waiting for client review before proof upload." : "Correct this bid and resubmit it for review."}
+        </p>
+      )}
       {!bid.deleted_at && !uploadOpen && (
         <Button
           size="sm"

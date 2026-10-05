@@ -14,6 +14,7 @@ import {
   prepareBidPurge,
   confirmBidPurge,
   retryPurgeCleanup,
+  reviewBidsAction,
 } from "@/app/(workspace)/actions";
 import { Button } from "./ui/button";
 import { Field } from "./common";
@@ -132,6 +133,10 @@ export function BulkBidToolbar({
         >
           {trash ? "Restore selected" : "Move selected to trash"}
         </Button>
+        {manager && !trash && <>
+          <Button size="sm" variant="outline" disabled={!targets.length || disabled || busy || loading} onClick={()=>void run(async()=>{const result=await reviewBidsAction(targets,"approved","");if(result.error)throw new Error(result.error);toast.success(`${result.data??targets.length} applications approved`);onDone();})}>Approve selected</Button>
+          <Button size="sm" variant="outline" disabled={!targets.length || disabled || busy || loading} onClick={()=>{const reason=window.prompt("Reason for rejecting the selected applications (required)");if(!reason?.trim())return;void run(async()=>{const result=await reviewBidsAction(targets,"rejected",reason);if(result.error)throw new Error(result.error);toast.success(`${result.data??targets.length} applications returned for correction`);onDone();});}}>Reject selected</Button>
+        </>}
         {trash && manager && (
           <>
             <Button

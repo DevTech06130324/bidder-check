@@ -20,6 +20,10 @@ export const authenticate = unavailable,
   resetManagedPassword = unavailable,
   createClientAccount = unavailable,
   unapplyBid = unavailable,
+  reviewBidAction = unavailable,
+  reviewBidsAction = unavailable,
+  resubmitBidAction = unavailable,
+  setBidInterviewAction = unavailable,
   saveSettings = unavailable,
   prepareUpload = unavailable,
   finalizeUpload = unavailable,
@@ -127,6 +131,13 @@ export async function prepareBidPurge(
 }
 export const confirmBidPurge = unavailable,
   getPurgeStatus = unavailable;
+export const getInboxNotifications = async () => ({ data: [] });
+export const getClientMessages = async () => ({ data: [] });
+export const markInboxNotificationAction = unavailable,
+  saveClientMessageAction = unavailable,
+  setClientMessageStatusAction = unavailable,
+  savePushSubscriptionAction = unavailable,
+  deletePushSubscriptionAction = unavailable;
 // `?purge-notice` simulates a removed screenshot whose verification becomes due in 4 seconds.
 const loadedAt = Date.now();
 let verified = false;

@@ -103,6 +103,8 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
     "Applied time (CT)",
     "Work arrangement",
     "Job status",
+    "Review status",
+    "Interview status",
     "Screenshot",
     "Actions",
   ]);
@@ -111,6 +113,17 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
   await expect(page.getByText("1\u201310 of 12 bids")).toBeVisible();
   await page.getByRole("button", { name: "Add bid", exact: true }).click();
   await expect(page.getByLabel(/Found time/)).toHaveCount(0);
+});
+
+test("column controls filter across current results and page size is customizable", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page.getByRole("button", { name: "All dates", exact: true }).click();
+  await page.getByRole("button", { name: "Filter Company name" }).click();
+  await page.getByLabel("Company name filter").fill("Linear");
+  await expect(page.getByText("1–1 of 1 bids")).toBeVisible();
+  await page.getByLabel("Rows per page", { exact: true }).selectOption("custom");
+  await page.getByLabel("Custom rows per page").fill("25");
+  await expect(page.getByLabel("Custom rows per page")).toHaveValue("25");
 });
 
 test("spreadsheet keyboard edits preserve drafts, focus and rectangular copying", async ({

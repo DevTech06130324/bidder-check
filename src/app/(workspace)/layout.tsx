@@ -6,10 +6,14 @@ export default async function Layout({
 }: {
   children: React.ReactNode;
 }) {
-  const { profile, workspaces } = await getContext();
+  const { profile, workspaces, supabase } = await getContext();
+  const { count: unreadCount } = profile.role === "bidder"
+    ? await supabase.from("inbox_notifications").select("id", { count: "exact", head: true }).is("read_at", null)
+    : { count: 0 };
   return (
     <Shell
       profile={profile}
+      unreadCount={unreadCount ?? 0}
       workspace={
         profile.role === "admin"
           ? "Platform overview"

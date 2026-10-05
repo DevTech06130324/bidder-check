@@ -9,6 +9,8 @@ import { CandidateProfileLibrary } from "@/components/profiles";
 import { People } from "@/components/people";
 import { Earnings } from "@/components/earnings";
 import { Settings } from "@/components/settings";
+import { Notifications } from "@/components/notifications";
+import { InterviewReport } from "@/components/interviews";
 import { fixture } from "./sample-data";
 import "@/app/globals.css";
 const pages: Record<string, React.ReactNode> = {
@@ -73,6 +75,8 @@ const pages: Record<string, React.ReactNode> = {
   ),
   "/earnings": <Earnings data={fixture} />,
   "/settings": <Settings data={fixture} />,
+  "/notifications": <Notifications data={fixture} initialInbox={[]} initialMessages={[]} />,
+  "/interviews": <InterviewReport data={fixture} />,
 };
 createRoot(document.getElementById("root")!).render(
   <Providers>

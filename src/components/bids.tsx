@@ -4,7 +4,9 @@ import { useRouter } from "next/navigation";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   ColumnDef,
+  ColumnFiltersState,
   getCoreRowModel,
+  getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
   SortingState,
@@ -32,6 +34,9 @@ import {
   getBidRows,
   unapplyBid,
   getBidHistory,
+  reviewBidAction,
+  resubmitBidAction,
+  setBidInterviewAction,
 } from "@/app/(workspace)/actions";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -283,9 +288,19 @@ export function BidWorkspace({
   const [sorting, setSorting] = useState<SortingState>([
     { id: "found_at", desc: true },
   ]);
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [openFilter, setOpenFilter] = useState<string | null>(null);
+  const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 10 });
+  const [customPageSize, setCustomPageSize] = useState(false);
+  const pageSize = pagination.pageSize;
   const [selected, setSelected] = useState<string>();
   const [history, setHistory] = useState<Row<"bid_events">[]>([]);
   const [reason, setReason] = useState("");
+  const [interviewEditor, setInterviewEditor] = useState<Bid | null>(null);
+  const [interviewAt, setInterviewAt] = useState("");
+  const [interviewNotes, setInterviewNotes] = useState("");
+  const [interviewReason, setInterviewReason] = useState("");
+  const [clearInterview, setClearInterview] = useState(false);
   const [pending, start] = useTransition();
   const router = useRouter();
   const [dateMode, setDateMode] = useState("today");
@@ -422,7 +437,7 @@ export function BidWorkspace({
   const filteredRows = useMemo(
     () =>
       rows.filter(
-        (b) => status === "all" || b.applied === (status === "applied"),
+        (b) => status === "all" || (status === "pending_review" ? b.review_status === "pending" : b.applied === (status === "applied")),
       ),
     [rows, status],
   );
@@ -450,26 +465,66 @@ export function BidWorkspace({
     stamp
       ? formatInTimeZone(stamp, BID_TIMEZONE, "MMM d, yyyy h:mm a") + " CT"
       : "-";
+  function editInterview(bid: Bid, clearing = false) {
+    setInterviewEditor(bid);
+    setClearInterview(clearing);
+    setInterviewAt(bid.interview_at ? formatInTimeZone(bid.interview_at, BID_TIMEZONE, "yyyy-MM-dd'T'HH:mm") : "");
+    setInterviewNotes(bid.interview_notes);
+    setInterviewReason("");
+  }
+  function saveInterview() {
+    if (!interviewEditor) return;
+    if (clearInterview && !interviewReason.trim()) { toast.error("A correction reason is required"); return; }
+    start(async () => {
+      const result = await setBidInterviewAction({ bid: interviewEditor.id, scheduled: !clearInterview, localTime: clearInterview ? "" : interviewAt, notes: clearInterview ? "" : interviewNotes, reason: interviewReason });
+      if (result.error) toast.error(result.error);
+      else { toast.success(clearInterview ? "Interview status corrected" : "Interview invitation saved"); setInterviewEditor(null); setRevision((n) => n + 1); }
+    });
+  }
+  function headerControl(id: string, label: string, options?: string[]) {
+    // The returned callback is TanStack's header renderer, not a React component.
+    // eslint-disable-next-line react/display-name
+    return ({ column }: { column: import("@tanstack/react-table").Column<Bid> }) => (
+      <div className="flex items-center gap-1">
+        <button disabled={isEditing} onClick={() => column.toggleSorting()} className="flex items-center gap-1">
+          {label}<ArrowUpDown size={11} />
+        </button>
+        <div className="relative" data-filter-column={id}>
+          <button type="button" aria-label={`Filter ${label}`} title={`Filter ${label}`} aria-expanded={openFilter===id} disabled={isEditing} className="rounded p-1 text-muted-foreground hover:bg-secondary" onClick={()=>setOpenFilter(openFilter===id?null:id)}><SlidersHorizontal size={12}/></button>
+          {openFilter===id&&<div className="absolute left-0 top-7 z-20 w-48 rounded-md border bg-card p-2 shadow-lg">
+            {id === "found_at" || id === "applied_at" ? (() => {
+              const range = (column.getFilterValue() as { from?: string; to?: string; presence?: string } | undefined) ?? {};
+              return <div className="space-y-2"><select aria-label={`${label} presence`} className="native-select" value={range.presence ?? "all"} onChange={(event)=>column.setFilterValue({...range,presence:event.target.value})}><option value="all">Any</option><option value="has">Has time</option><option value="empty">No time</option></select><label className="block text-[10px] text-muted-foreground">From (CT)<input aria-label={`${label} from CT`} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-xs" type="date" value={range.from ?? ""} onChange={(event)=>column.setFilterValue({...range,from:event.target.value})}/></label><label className="block text-[10px] text-muted-foreground">Through (CT)<input aria-label={`${label} through CT`} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-xs" type="date" value={range.to ?? ""} onChange={(event)=>column.setFilterValue({...range,to:event.target.value})}/></label></div>;
+            })() : options ? <select aria-label={`${label} filter`} className="native-select" value={String(column.getFilterValue() ?? "")} onChange={(event) => column.setFilterValue(event.target.value || undefined)}>
+              <option value="">All</option>{options.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select> : <Input aria-label={`${label} filter`} placeholder={`Filter ${label.toLowerCase()}`} value={String(column.getFilterValue() ?? "")} onChange={(event) => column.setFilterValue(event.target.value || undefined)} />}
+            <div className="mt-2 flex justify-between"><button className="text-xs text-primary" onClick={() => column.setFilterValue(undefined)}>Clear filter</button><button className="text-xs text-muted-foreground" onClick={()=>setOpenFilter(null)}>Close</button></div>
+          </div>}
+        </div>
+      </div>
+    );
+  }
   const columns: ColumnDef<Bid>[] = [
     {
       accessorKey: "found_at",
-      header: ({ column }) => (
-        <button
-          disabled={isEditing}
-          onClick={() => column.toggleSorting()}
-          className="flex items-center gap-1"
-        >
-          Added date (CT)
-          <ArrowUpDown size={11} />
-        </button>
-      ),
+      filterFn: (row, _id, value) => {
+        const range = value as { from?: string; to?: string; presence?: string } | undefined;
+        const day = formatInTimeZone(row.original.found_at, BID_TIMEZONE, "yyyy-MM-dd");
+        return (!range?.from || day >= range.from) && (!range?.to || day <= range.to) && range?.presence !== "empty";
+      },
+      header: headerControl("found_at", "Added date (CT)"),
       cell: ({ row }) => (
         <span className="text-xs">{ct(row.original.found_at)}</span>
       ),
     },
     {
       accessorKey: "resume_id",
-      header: "Resume ID",
+      filterFn: (row, _id, value) => {
+        const resume = data.resumes.find((item) => item.id === row.original.resume_id);
+        const profile = data.candidateProfiles.find((item) => item.id === resume?.profile_id);
+        return `${profile?.identifier ?? ""} ${profile?.candidate_name ?? ""} ${resume?.email ?? ""}`.toLowerCase().includes(String(value).toLowerCase());
+      },
+      header: headerControl("resume_id", "Resume ID"),
       cell: ({ row }) => (
         <Badge variant="outline">
           {data.resumes.find((r) => r.id === row.original.resume_id)
@@ -479,15 +534,15 @@ export function BidWorkspace({
     },
     {
       accessorKey: "company",
-      header: "Company name",
+      header: headerControl("company", "Company name"),
       cell: ({ row }) => (
         <span className="font-medium">{row.original.company}</span>
       ),
     },
-    { accessorKey: "role_name", header: "Role" },
+    { accessorKey: "role_name", header: headerControl("role_name", "Role") },
     {
       accessorKey: "url",
-      header: "Link",
+      header: headerControl("url", "Link"),
       cell: ({ row }) => (
         <a
           className="text-primary underline"
@@ -502,7 +557,11 @@ export function BidWorkspace({
     },
     {
       accessorKey: "bidder_id",
-      header: "Bidder ID",
+      filterFn: (row, _id, value) => {
+        const profile = data.profiles.find((item) => item.id === row.original.bidder_id);
+        return `${profile?.display_name ?? ""} ${row.original.bidder_id}`.toLowerCase().includes(String(value).toLowerCase());
+      },
+      header: headerControl("bidder_id", "Bidder ID"),
       cell: ({ row }) => (
         <button
           className="text-left text-xs"
@@ -523,34 +582,69 @@ export function BidWorkspace({
         </button>
       ),
     },
-    { accessorKey: "source", header: "Job site" },
+    { accessorKey: "source", header: headerControl("source", "Job site", [...new Set(list.map((b) => b.source).filter(Boolean))]) },
     {
       accessorKey: "applied",
-      header: "Applied status",
+      filterFn: (row, _id, value) => value === (row.original.applied ? "Applied" : "Unapplied"),
+      header: headerControl("applied", "Applied status", ["Applied", "Unapplied"]),
       cell: ({ row }) => <AppliedBadge applied={row.original.applied} />,
     },
     {
       accessorKey: "applied_at",
-      header: "Applied time (CT)",
+      filterFn: (row, _id, value) => {
+        const range = value as { from?: string; to?: string; presence?: string } | undefined;
+        if (!row.original.applied_at) return range?.presence === "empty" && !range.from && !range.to;
+        const day = formatInTimeZone(row.original.applied_at, BID_TIMEZONE, "yyyy-MM-dd");
+        return range?.presence !== "empty" && (!range?.from || day >= range.from) && (!range?.to || day <= range.to);
+      },
+      header: headerControl("applied_at", "Applied time (CT)"),
       cell: ({ row }) => (
         <span className="text-xs">{ct(row.original.applied_at)}</span>
       ),
     },
     {
       accessorKey: "arrangement",
-      header: "Work arrangement",
+      header: headerControl("arrangement", "Work arrangement", ["remote", "onsite", "hybrid"]),
       cell: ({ getValue }) => (
         <span className="capitalize">{String(getValue())}</span>
       ),
     },
-    { accessorKey: "job_status", header: "Job status" },
+    { accessorKey: "job_status", header: headerControl("job_status", "Job status", ["open", "closed"]) },
+    {
+      accessorKey: "review_status",
+      header: headerControl("review_status", "Review status", ["pending", "approved", "rejected"]),
+      cell: ({ row }) => {
+        const bid = row.original;
+        const manager = data.profile.role !== "bidder";
+        return <div className="min-w-36 space-y-1">
+          <Badge variant={bid.review_status === "approved" ? "secondary" : "outline"}>{bid.review_status.replaceAll("_", " ")}</Badge>
+          {bid.review_status === "rejected" && bid.review_reason && <p className="max-w-40 text-[10px] text-destructive">{bid.review_reason}</p>}
+          {!bid.deleted_at && manager && !bid.applied && bid.review_status !== "approved" && <div className="flex gap-1"><Button size="sm" variant="outline" disabled={pending} onClick={() => start(async () => { const result = await reviewBidAction(bid.id,"approved","",bid.version); if(result.error) toast.error(result.error); else { toast.success("Application approved"); setRevision(n=>n+1); } })}>Approve</Button><Button size="sm" variant="ghost" disabled={pending} onClick={() => { const reason = window.prompt("Reason for rejection (required)"); if(!reason?.trim()) return; start(async () => { const result = await reviewBidAction(bid.id,"rejected",reason,bid.version); if(result.error) toast.error(result.error); else { toast.success("Application returned for correction"); setRevision(n=>n+1); } }); }}>Reject</Button></div>}
+          {!manager && bid.review_status === "rejected" && !bid.applied && <Button size="sm" variant="outline" disabled={pending} onClick={() => start(async () => { const result = await resubmitBidAction(bid.id,bid.version); if(result.error) toast.error(result.error); else { toast.success("Resubmitted for review"); setRevision(n=>n+1); } })}>Resubmit</Button>}
+        </div>;
+      },
+    },
+    {
+      accessorKey: "interview_scheduled",
+      filterFn: (row, _id, value) => value === (row.original.interview_scheduled ? "Scheduled" : "Not scheduled"),
+      header: headerControl("interview_scheduled", "Interview status", ["Scheduled", "Not scheduled"]),
+      cell: ({ row }) => {
+        const bid = row.original;
+        return <div className="min-w-36 space-y-1"><Badge variant={bid.interview_scheduled ? "secondary" : "outline"}>{bid.interview_scheduled ? "Interview scheduled" : "—"}</Badge>
+        {bid.interview_scheduled && <p className="text-[10px] text-muted-foreground">{bid.interview_at ? ct(bid.interview_at) : "Date not set"}</p>}
+        {data.profile.role !== "bidder" && bid.applied && !bid.deleted_at && <div className="flex flex-wrap gap-1"><Button size="sm" variant="ghost" onClick={() => editInterview(bid)}>{bid.interview_scheduled ? "Edit" : "Record"}</Button>{bid.interview_scheduled && <Button size="sm" variant="ghost" onClick={() => editInterview(bid,true)}>Clear</Button>}</div>}</div>;
+      },
+    },
     {
       id: "screenshot",
-      header: "Screenshot",
+      accessorFn: (row) => Boolean(row.evidence_file_id),
+      filterFn: (row, _id, value) => value === (row.original.evidence_file_id ? "Has screenshot" : "No screenshot"),
+      sortingFn: (a, b) => Number(Boolean(a.original.evidence_file_id)) - Number(Boolean(b.original.evidence_file_id)),
+      header: headerControl("screenshot", "Screenshot", ["Has screenshot", "No screenshot"]),
       cell: ({ row }) => (
         <ScreenshotCell
           bid={row.original}
-          disabled={isEditing || pending}
+          disabled={isEditing || pending || row.original.review_status !== "approved"}
           onBusy={(value) => {
             setUploadBusy(value);
             editingChanged(value);
@@ -590,12 +684,14 @@ export function BidWorkspace({
     getRowId: (row) => row.id,
     autoResetPageIndex: false,
     columns,
-    state: { sorting },
+    state: { sorting, columnFilters, pagination },
     onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    onPaginationChange: setPagination,
     getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: 10 } },
   });
   const filterKey = JSON.stringify([
     search,
@@ -610,6 +706,7 @@ export function BidWorkspace({
     to,
     trash,
     sorting,
+    columnFilters,
     dateMode === "today" || dateMode === "yesterday" ? today : "",
   ]);
   useEffect(() => {
@@ -617,12 +714,15 @@ export function BidWorkspace({
     table.setPageIndex(0);
   }, [filterKey, table]);
   useEffect(() => {
-    const max = Math.max(
-      0,
-      Math.ceil(filteredRows.length / table.getState().pagination.pageSize) - 1,
-    );
+    try {
+      const saved = Number(localStorage.getItem(`bidder-check-page-size:${data.profile.id}`));
+      if (Number.isInteger(saved) && saved >= 1 && saved <= 100) { setPagination((current) => ({ ...current, pageSize: saved })); setCustomPageSize(![10,25,50,100].includes(saved)); }
+    } catch { /* Browser storage is optional. */ }
+  }, [data.profile.id]);
+  useEffect(() => {
+    const max = Math.max(0, Math.ceil(table.getFilteredRowModel().rows.length / pageSize) - 1);
     if (table.getState().pagination.pageIndex > max) table.setPageIndex(max);
-  }, [filteredRows.length, table]);
+  }, [filteredRows.length, columnFilters, pageSize, table]);
   return (
     <>
       {paste !== null && (
@@ -650,19 +750,19 @@ export function BidWorkspace({
         <fieldset disabled={isEditing} className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
             <div className="flex gap-1">
-              {["all", "unapplied", "applied"].map((s) => (
+              {["all", "unapplied", "applied", ...(data.profile.role === "bidder" ? [] : ["pending_review"])].map((s) => (
                 <Button
                   key={s}
                   variant={status === s ? "secondary" : "ghost"}
                   size="sm"
-                  onClick={() => setStatus(s)}
+                  onClick={() => { setStatus(s); if (s === "pending_review") setDateMode("all"); }}
                   className="text-xs capitalize"
                 >
-                  {s === "all" ? "All bids" : s}
+                  {s === "all" ? "All bids" : s === "pending_review" ? "Pending review" : s}
                   <span className="ml-1 rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
                     {
                       rows.filter(
-                        (b) => s === "all" || b.applied === (s === "applied"),
+                        (b) => s === "all" || (s === "pending_review" ? b.review_status === "pending" : b.applied === (s === "applied")),
                       ).length
                     }
                   </span>
@@ -899,6 +999,8 @@ export function BidWorkspace({
                 from,
                 to,
                 trash,
+                columnFilters,
+                pageSize,
               ])}
               checked={checked}
               disabled={pending || bulkBusy || uploadBusy}
@@ -929,14 +1031,15 @@ export function BidWorkspace({
             />
             <div className="flex items-center justify-between border-t px-5 py-4 text-xs text-muted-foreground">
               <span>
-                {table.getState().pagination.pageIndex * 10 + 1}–
+                  {table.getState().pagination.pageIndex * pageSize + 1}–
                 {Math.min(
-                  (table.getState().pagination.pageIndex + 1) * 10,
-                  filteredRows.length,
+                  (table.getState().pagination.pageIndex + 1) * pageSize,
+                  table.getFilteredRowModel().rows.length,
                 )}{" "}
-                of {filteredRows.length} bids
+                of {table.getFilteredRowModel().rows.length} bids
               </span>
               <div className="flex items-center gap-2">
+                <label className="flex items-center gap-2">Rows per page <select aria-label="Rows per page" className="native-select w-20" value={customPageSize?"custom":pageSize} onChange={(event)=>{if(event.target.value==="custom"){setCustomPageSize(true);return;}setCustomPageSize(false);const value=Number(event.target.value);setPagination({pageIndex:0,pageSize:value});try{localStorage.setItem(`bidder-check-page-size:${data.profile.id}`,String(value));}catch{}}}>{[10,25,50,100].map(n=><option key={n} value={n}>{n}</option>)}<option value="custom">Custom</option></select>{customPageSize&&<input aria-label="Custom rows per page" type="number" min={1} max={100} value={pageSize} className="h-9 w-16 rounded-md border bg-background px-2" onChange={(event)=>{const value=Number(event.target.value);if(Number.isInteger(value)&&value>=1&&value<=100){setPagination({pageIndex:0,pageSize:value});try{localStorage.setItem(`bidder-check-page-size:${data.profile.id}`,String(value));}catch{}}}} />}</label>
                 <Button
                   aria-label="Previous page"
                   size="icon-sm"
@@ -963,6 +1066,20 @@ export function BidWorkspace({
           </>
         )}
       </section>
+      <Dialog open={!!interviewEditor} onOpenChange={(open) => { if (!open) setInterviewEditor(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{clearInterview ? "Correct interview status" : interviewEditor?.interview_scheduled ? "Edit interview invitation" : "Record interview invitation"}</DialogTitle>
+            <DialogDescription>{interviewEditor?.company} · {interviewEditor?.role_name}. Interview details are visible only within this workspace and the assigned bidder.</DialogDescription>
+          </DialogHeader>
+          {!clearInterview && <>
+            <Field label="Interview date and time (CT)" type="datetime-local" value={interviewAt} onChange={(event)=>setInterviewAt(event.target.value)} />
+            <label className="block space-y-2 text-xs">Notes<Textarea rows={4} maxLength={2000} value={interviewNotes} onChange={(event)=>setInterviewNotes(event.target.value)} placeholder="Optional details for the interview." /></label>
+          </>}
+          {clearInterview && <label className="block space-y-2 text-xs">Correction reason<Textarea rows={3} maxLength={1000} value={interviewReason} onChange={(event)=>setInterviewReason(event.target.value)} required placeholder="Explain why this interview status is being cleared." /></label>}
+          <div className="flex justify-end gap-2"><Button variant="outline" onClick={()=>setInterviewEditor(null)}>Cancel</Button><Button variant={clearInterview?"destructive":"default"} disabled={pending || (clearInterview && !interviewReason.trim())} onClick={saveInterview}>{clearInterview?"Clear status":"Save interview"}</Button></div>
+        </DialogContent>
+      </Dialog>
       <Sheet
         open={!!active}
         onOpenChange={(open) => {
@@ -1051,11 +1168,16 @@ export function BidWorkspace({
                           : "Application proof"}
                     </h3>
                     <p className="text-xs text-muted-foreground">
-                      Upload automatically records the application
+                      {active.review_status === "approved"
+                        ? "Upload automatically records the application"
+                        : active.review_status === "pending"
+                          ? "Waiting for client review before proof upload."
+                          : "Correct this bid and resubmit it for review before uploading proof."}
                     </p>
                     <FileUpload
                       kind="screenshot"
                       target={active.id}
+                      disabled={active.review_status !== "approved"}
                       onUploaded={() => {
                         setSelected(undefined);
                         setRevision((n) => n + 1);

@@ -2,9 +2,9 @@ import { AuthForm } from "@/components/auth-form";
 export default async function Login({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; next?: string }>;
 }) {
-  const { error } = await searchParams;
+  const { error, next } = await searchParams;
   return (
     <>
       <p className="eyebrow mb-3">YOUR WORKSPACE AWAITS</p>
@@ -12,7 +12,7 @@ export default async function Login({
       <p className="mb-9 mt-3 text-muted-foreground">
         Good to see you. Let’s pick up where you left off.
       </p>
-      <AuthForm mode="login" error={error} />
+      <AuthForm mode="login" error={error} next={next} />
     </>
   );
 }

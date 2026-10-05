@@ -26,6 +26,18 @@ Production is deployed at https://bidder-check.vercel.app and isolated Preview a
 
 The direct-account onboarding update is live. It replaces emailed bidder invitations with manager-created accounts (initial password `123456`), supports password changes in Settings, and signs clients in immediately after registration. SMTP is outside the revised scope. Production and staging have migrations 001–003, with all eight tables under RLS and a private file bucket.
 
+## Review, interview reporting, and scheduled notifications
+
+Migrations `202610050001`–`202610050003` add review-gated screenshot submission, interview tracking with retention-safe reporting, scheduled client messages, bidder inbox records, per-device push subscriptions, and atomic bulk review. The bid grid exposes the all-dates Pending review queue, per-column controls, and user-specific page size. `/interviews` reports first-application cohorts; `/notifications` manages schedules or the bidder inbox.
+
+Notification delivery requires the separate SQL scripts under `supabase/scheduler/notifications-*.sql`. Configure `NOTIFICATION_WORKER_SECRET` in the matching Vercel environment, then create Vault secrets for that deployment's `/api/cron/notifications` URL and the same bearer value. On Vercel deployments protected by authentication, also store the deployment-protection bypass in that environment's Vault. Run the notification function script before its schedule script; the job invokes the worker every minute. Keep staging and production VAPID keys and push subscriptions separate.
+
+Browser push is optional. Set `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` in the matching Vercel environment; generate a pair with `npx web-push generate-vapid-keys`. Without these values, scheduled messages still publish to the in-app inbox. On iPhone/iPad, install Bidder Check to the home screen before enabling browser notifications. SMTP remains disabled.
+
+Staging acceptance completed on 2026-10-05. The three migrations are applied to `kdmvludtvhuuewmhurpw`; Preview deployment `dpl_BoziLmFsTm2s9WYhDV6jFbFezApB` is READY at `https://bidder-check-lm3yco1wo-devtech06130324s-projects.vercel.app`. The staging notification Cron runs every minute, its Vault endpoint targets that deployment, and a worker invocation returned HTTP 200. The hosted suite passed all 20 checkpoints, including approval-gated screenshot upload, selected-recipient inbox delivery/read state, interview conversion, retention and reset cleanup; it removed its synthetic accounts and confirmed the cutover gate is off. Local lint, type checking, 87 unit tests, 41 database tests, and the production build pass.
+
+Production migrations `202610050001` through `202610050003` were applied on 2026-10-05 through the authenticated Supabase CLI passwordless login flow; the production ledger matches local through `202610050003`. Production deployment `dpl_DfCtanwpjbKGLLkuaHySpyLn7Q5m` is READY at https://bidder-check.vercel.app. Scheduled in-app notifications are configured: `NOTIFICATION_WORKER_SECRET` is a sensitive Vercel Production variable, the endpoint URL, worker secret, and deployment-protection bypass are stored in Supabase Vault, and `bidder-check-notifications` runs every minute. Production worker verification returned HTTP 200 with no network error on 2026-10-05. Vercel deployment protection remains enabled. Browser push is optional; its VAPID keys are not configured, and real-device push was not exercised. These migrations are additive; do not run a production data reset.
+
 ## Required access
 
 Use `.env.local` for local secrets; `.gitignore` excludes it. Keep secrets out of chat and Git.
@@ -38,6 +50,7 @@ Use `.env.local` for local secrets; `.gitignore` excludes it. Keep secrets out o
 | `APP_URL`                              | Trusted application origin; localhost in development                 |
 | `SUPABASE_ACCESS_TOKEN`                | Optional local deployment credential for Supabase Management API/CLI |
 | `VERCEL_TOKEN`                         | Optional local deployment credential for Vercel CLI                  |
+| `SUPABASE_DB_PASSWORD`                  | Temporary local-only CLI credential required for the production migration push; never add it to Vercel |
 
 Management/deployment tokens are not runtime variables and must not be sent to browsers or installed in the Vercel application environment.
 

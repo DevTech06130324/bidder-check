@@ -10,6 +10,7 @@ import {
 } from "@/lib/domain";
 import type { Database } from "@/lib/database.types";
 import { createHash } from "node:crypto";
+import { fromZonedTime } from "date-fns-tz";
 import { z } from "zod";
 import { validateScreenshotBytes } from "@/lib/image-validation";
 import { runStorageCleanup } from "@/lib/storage-cleanup";
@@ -87,6 +88,139 @@ export async function saveResume(form: FormData) {
         p_rate: moneyToCents(text(form, "rate")),
       }),
   );
+}
+export async function reviewBidAction(
+  bid: string,
+  status: "approved" | "rejected",
+  reason: string,
+  version: number,
+) {
+  return perform(async () => {
+    const result = await rpc("review_bid", {
+      p_bid: z.uuid().parse(bid),
+      p_status: z.enum(["approved", "rejected"]).parse(status),
+      p_reason: z.string().max(1000).parse(reason),
+      p_version: z.number().int().nonnegative().parse(version),
+    });
+    if (result && typeof result === "object" && "conflict" in result && result.conflict === true) throw new Error("This bid changed. Refresh the current row before reviewing it.");
+    return result;
+  });
+}
+export async function reviewBidsAction(
+  targets: { id: string; version: number }[],
+  status: "approved" | "rejected",
+  reason: string,
+) {
+  return perform(async () => rpc("review_bids", {
+    p_targets: z.array(z.object({ id: z.uuid(), version: z.number().int().nonnegative() })).min(1).max(500).parse(targets),
+    p_status: z.enum(["approved", "rejected"]).parse(status),
+    p_reason: z.string().max(1000).parse(reason),
+  }));
+}
+export async function resubmitBidAction(bid: string, version: number) {
+  return perform(async () => {
+    const result = await rpc("resubmit_bid", {
+      p_bid: z.uuid().parse(bid),
+      p_version: z.number().int().nonnegative().parse(version),
+    });
+    if (result && typeof result === "object" && "conflict" in result && result.conflict === true) throw new Error("This bid changed. Refresh the current row before resubmitting it.");
+    return result;
+  });
+}
+export async function setBidInterviewAction(input: {
+  bid: string;
+  scheduled: boolean;
+  localTime: string;
+  notes: string;
+  reason: string;
+}) {
+  return perform(async () => {
+    const localTime = z.string().max(16).parse(input.localTime).trim();
+    const instant = localTime ? fromZonedTime(localTime, "America/Chicago").toISOString() : null;
+    return rpc("set_bid_interview", {
+      p_bid: z.uuid().parse(input.bid),
+      p_scheduled: z.boolean().parse(input.scheduled),
+      p_at: instant,
+      p_notes: z.string().max(2000).parse(input.notes),
+      p_reason: z.string().max(1000).parse(input.reason),
+    });
+  });
+}
+export async function saveClientMessageAction(form: FormData) {
+  return perform(async () => {
+    const { profile, workspaces } = await getContext();
+    if (profile.role === "bidder") throw new Error("Access denied");
+    const workspace = profile.role === "admin"
+      ? z.uuid().parse(text(form, "workspace_id"))
+      : workspaces[0]?.id;
+    if (!workspace) throw new Error("Workspace not found");
+    const kind = z.enum(["once", "daily", "weekly"]).parse(text(form, "schedule_kind"));
+    const mode = z.enum(["all", "selected"]).parse(text(form, "recipient_mode"));
+    const recipients = z.array(z.uuid()).max(500).parse(form.getAll("recipient_ids").map(String).filter(Boolean));
+    const local = text(form, "scheduled_local");
+    const sendNow = form.get("send_now") === "on";
+    const draft = form.get("save_draft") === "on";
+    const once = kind === "once" && !sendNow ? z.string().min(1).parse(local) : "";
+    const weekdays = form.getAll("weekdays").map((day) => z.coerce.number().int().min(0).max(6).parse(day));
+    return rpc("save_client_message", {
+      p_id: id(text(form, "id")),
+      p_workspace: workspace,
+      p_title: z.string().trim().min(1).max(120).parse(text(form, "title")),
+      p_body: z.string().trim().min(1).max(4000).parse(text(form, "body")),
+      p_mode: mode,
+      p_recipients: mode === "selected" ? recipients : [],
+      p_kind: kind,
+      p_scheduled_at: sendNow ? new Date().toISOString() : once ? fromZonedTime(once, "America/Chicago").toISOString() : null,
+      p_local_time: kind === "once" ? null : z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).parse(text(form, "local_time")),
+      p_weekdays: kind === "weekly" ? weekdays : [],
+      p_draft: draft,
+    });
+  });
+}
+export async function setClientMessageStatusAction(idValue: string, status: "active" | "paused" | "cancelled") {
+  return perform(async () => rpc("set_message_status", {
+    p_id: z.uuid().parse(idValue),
+    p_status: z.enum(["active", "paused", "cancelled"]).parse(status),
+  }));
+}
+export async function getInboxNotifications() {
+  return perform(async () => {
+    const { supabase } = await getContext();
+    const { data, error } = await supabase.from("inbox_notifications").select("*").order("created_at", { ascending: false }).limit(100);
+    if (error) throw new Error(error.message);
+    return data;
+  }, false);
+}
+export async function getClientMessages() {
+  return perform(async () => {
+    const { supabase, profile } = await getContext();
+    if (profile.role === "bidder") throw new Error("Access denied");
+    const { data, error } = await supabase.from("client_messages").select("*").order("created_at", { ascending: false }).limit(200);
+    if (error) throw new Error(error.message);
+    return data;
+  }, false);
+}
+export async function markInboxNotificationAction(notification: string, read: boolean) {
+  return perform(async () => rpc("mark_notification_read", {
+    p_id: z.uuid().parse(notification),
+    p_read: z.boolean().parse(read),
+  }));
+}
+export async function savePushSubscriptionAction(subscription: {
+  endpoint: string;
+  keys?: { p256dh?: string; auth?: string };
+}) {
+  return perform(async () => rpc("save_push_subscription", {
+    p_endpoint: z.url().parse(subscription.endpoint),
+    p_p256dh: z.string().min(1).max(256).parse(subscription.keys?.p256dh),
+    p_auth: z.string().min(1).max(256).parse(subscription.keys?.auth),
+  }));
+}
+export async function deletePushSubscriptionAction(endpoint: string) {
+  return perform(async () => rpc("delete_push_subscription", { p_endpoint: z.url().parse(endpoint) }));
+}
+export async function deleteAllPushSubscriptionsAction() {
+  return perform(async () => rpc("delete_all_push_subscriptions", {}), false);
 }
 export async function saveCandidateProfile(form: FormData) {
   return perform(async () => {

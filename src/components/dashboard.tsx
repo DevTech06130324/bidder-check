@@ -21,6 +21,7 @@ import {
   FileText,
   Target,
   Sun,
+  CalendarCheck2,
 } from "lucide-react";
 import type { WorkspaceData } from "@/lib/data";
 import { summarizeEarnings, usd } from "@/lib/domain";
@@ -50,6 +51,11 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
   const appliedHistory = retained.filter((row) => row.metric === "applied_activity").reduce((sum, row) => sum + row.record_count, 0);
   const earningHistory = retained.filter((row) => row.metric === "earning");
   const bids = liveFound.length + foundHistory;
+  const interviewCohort = data.bids.filter((b) => b.applied && b.first_applied_at && formatInTimeZone(b.first_applied_at, timezone, "yyyy-MM-dd") >= fromDate && formatInTimeZone(b.first_applied_at, timezone, "yyyy-MM-dd") <= throughDate);
+  const trackedHistory = earningHistory.reduce((total, row) => total + Number(row.tracked_count), 0);
+  const interviewHistory = earningHistory.reduce((total, row) => total + Number(row.interview_count), 0);
+  const interviewApplications = interviewCohort.length + trackedHistory;
+  const interviewInvitations = interviewCohort.filter((b) => b.interview_scheduled).length + interviewHistory;
   const applied = data.bids.filter(
     (b) => b.applied && b.applied_at &&
       formatInTimeZone(b.applied_at, data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ?? timezone, "yyyy-MM-dd") >= fromDate &&
@@ -128,6 +134,14 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
       color: "text-amber-600",
       bg: "bg-amber-500/10",
     },
+    {
+      label: "Interview conversion",
+      value: interviewApplications ? `${Math.round(interviewInvitations / interviewApplications * 100)}%` : "—",
+      sub: `${interviewInvitations} invitation${interviewInvitations === 1 ? "" : "s"} / ${interviewApplications} applications`,
+      icon: CalendarCheck2,
+      color: "text-violet-600",
+      bg: "bg-violet-500/10",
+    },
   ];
   return (
     <>
@@ -153,7 +167,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
           <BidDialog data={data} />
         </div>
       </PageHeading>
-      <div className="mb-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {stats.map((s) => (
           <div className="panel p-5" key={s.label}>
             <div className="flex items-center justify-between">

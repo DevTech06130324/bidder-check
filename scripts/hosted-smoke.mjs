@@ -446,9 +446,45 @@ try {
         .from("invitations")
         .select("accepted_at")
         .eq("email", bidderEmail)
-        .single(),
+      .single(),
     ).accepted_at,
   );
+  const messageTitle = `Smoke update ${randomUUID()}`;
+  const messageId = ok(
+    await client.rpc("save_client_message", {
+      p_id: null,
+      p_workspace: workspaces[0],
+      p_title: messageTitle,
+      p_body: "Please review the updated application guidance.",
+      p_mode: "selected",
+      p_recipients: [invited.id],
+      p_kind: "once",
+      p_scheduled_at: new Date(Date.now() - 60_000).toISOString(),
+      p_local_time: null,
+      p_weekdays: [],
+      p_draft: false,
+    }),
+  );
+  assert.ok(messageId);
+  ok(await admin.rpc("process_due_messages", { p_now: new Date().toISOString(), p_limit: 100 }));
+  const inboxMessage = ok(
+    await bidder
+      .from("inbox_notifications")
+      .select("id,title,read_at")
+      .eq("user_id", invited.id)
+      .eq("title", messageTitle)
+      .single(),
+  );
+  assert.equal(inboxMessage.read_at, null);
+  assert.deepEqual(
+    ok(await other.from("inbox_notifications").select("id").eq("user_id", invited.id)),
+    [],
+  );
+  ok(await bidder.rpc("mark_notification_read", { p_id: inboxMessage.id, p_read: true }));
+  await bp.goto(`${origin}/notifications`);
+  await expect(bp.getByText(messageTitle, { exact: true })).toBeVisible();
+  await expect(bp.getByRole("button", { name: "Mark unread" })).toBeVisible();
+  pass("Client sends a selected-bidder inbox notification; ownership and read-state controls are enforced");
   pass(
     "Client creates bidder without email; 123456 signs in; Settings password change disables old password",
   );
@@ -527,6 +563,21 @@ try {
   const bid = ok(
     await bidder.from("bids").select("*").eq("resume_id", resume.id).single(),
   );
+  assert.equal(bid.review_status, "pending");
+  await openBid(bp);
+  await expect(
+    bp.getByRole("dialog").getByText("Waiting for client review before proof upload.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    bp.getByRole("dialog").getByLabel("Choose screenshot", { exact: true }),
+  ).toBeDisabled();
+  await cp.goto(`${origin}/bids`);
+  const reviewRow = cp.getByRole("row").filter({ hasText: "Smoke Company" });
+  await reviewRow.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(cp.getByText("Application approved", { exact: true })).toBeVisible();
+  assert.equal((await readBid(bid.id)).review_status, "approved");
   await openBid(bp);
   await bp
     .getByRole("dialog")
@@ -554,6 +605,37 @@ try {
   const applied = await readBid(bid.id);
   assert.equal(applied.applied, true);
   assert.equal(applied.rate_cents, 250);
+  ok(
+    await client.rpc("set_bid_interview", {
+      p_bid: bid.id,
+      p_scheduled: true,
+      p_at: new Date(Date.now() + 86_400_000).toISOString(),
+      p_notes: "Smoke interview details",
+      p_reason: null,
+    }),
+  );
+  assert.equal(
+    ok(await bidder.from("bids").select("interview_scheduled").eq("id", bid.id).single())
+      .interview_scheduled,
+    true,
+  );
+  assert.ok(
+    (
+      await bidder.rpc("set_bid_interview", {
+        p_bid: bid.id,
+        p_scheduled: true,
+        p_at: new Date(Date.now() + 86_400_000).toISOString(),
+        p_notes: "Bidder cannot edit this",
+        p_reason: null,
+      })
+    ).error,
+  );
+  await cp.goto(`${origin}/interviews`);
+  await expect(cp.getByRole("heading", { name: "Interview performance" })).toBeVisible();
+  await expect(
+    cp.getByText("Interview conversion", { exact: true }).last().locator("..").locator("strong"),
+  ).toHaveText("100%");
+  pass("Client interview tracking feeds conversion reporting; bidder access is read-only");
   await openBid(bp);
   proof = await cp.screenshot();
   await uploadProof(bp, proof);
@@ -887,7 +969,7 @@ try {
     "Sheets UI imports historical rows, inline edit persists, concurrent edits conflict, import retries deduplicate and invalid batches roll back",
   );
   // Purge only this run's synthetic import. Include finalized and unfinished files.
-  const purgeBid = await readBid(ok(receipts[0]).ids[0]);
+  let purgeBid = await readBid(ok(receipts[0]).ids[0]);
   ok(
     await bidder.rpc("update_bid_cell", {
       p_bid: purgeBid.id,
@@ -896,6 +978,16 @@ try {
       p_version: purgeBid.version,
     }),
   );
+  purgeBid = await readBid(purgeBid.id);
+  ok(
+    await client.rpc("review_bid", {
+      p_bid: purgeBid.id,
+      p_status: "approved",
+      p_reason: null,
+      p_version: purgeBid.version,
+    }),
+  );
+  purgeBid = await readBid(purgeBid.id);
   const purgePaths = [];
   for (const finalized of [true, false]) {
     const id = ok(
@@ -1184,12 +1276,11 @@ try {
         .limit(1)
         .single(),
     );
-    const blockedWrite = await bidder.rpc("update_bid_cell", {
-      p_bid: gateTarget.id,
-      p_field: "source",
-      p_value: `${gateTarget.source} paused-check`,
-      p_version: gateTarget.version,
-    });
+    const blockedWrite = await admin
+      .from("bids")
+      .update({ source: `${gateTarget.source} paused-check` })
+      .eq("id", gateTarget.id)
+      .select("id");
     assert.match(blockedWrite.error?.message ?? "", /temporarily paused/i);
 
     const resetResult = ok(
