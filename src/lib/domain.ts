@@ -1,5 +1,13 @@
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 export const BID_TIMEZONE = "America/Chicago";
+export function formatCTDateBucket(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
+    throw new Error("Enter a valid calendar date.");
+  const instant = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(instant.getTime()) || instant.toISOString().slice(0, 10) !== value)
+    throw new Error("Enter a valid calendar date.");
+  return formatInTimeZone(instant, "UTC", "MMM d");
+}
 export function chicagoDateRange(
   mode: string,
   from: string,

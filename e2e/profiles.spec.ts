@@ -34,5 +34,12 @@ test("resume assignments select a shared profile and keep contact details local"
     "",
   );
   await expect(dialog.getByLabel("Postal address")).toHaveCount(0);
-  await expect(dialog.getByLabel("Choose resume file")).toHaveCount(0);
+  await expect(dialog.getByLabel("Choose resume file")).toHaveAttribute(
+    "accept",
+    "application/pdf",
+  );
+  await expect(dialog.getByLabel("Choose resume file")).toHaveAttribute(
+    "required",
+    "",
+  );
 });

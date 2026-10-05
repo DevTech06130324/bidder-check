@@ -20,7 +20,7 @@ async function finalizeResumeFile(resumeId: string, actor = client): Promise<str
       [resumeId],
     )
   ).rows[0].id;
-  await db.exec("reset role; set role service_role");
+  await db.exec("reset role");
   await db.query("select public.finalize_verified_file($1,$2,$3)", [
     upload,
     "b".repeat(64),
@@ -1954,4 +1954,89 @@ it("resets only an explicitly inventoried application library and preserves acco
   expect(audit.bid_count).toBe(inventory.bidCount);
   expect(audit.file_count).toBe(inventory.fileCount);
   await db.query("select public.set_application_library_cutover(false)");
+});
+
+it("creates admin signup alerts only for public pending clients and defaults new profiles to two months", async () => {
+  const admin = other;
+  const publicClient = "00000000-0000-4000-8000-000000000011";
+  await db.exec("reset role");
+  await db.query("update public.profiles set role='admin', archived=false where id=$1", [admin]);
+  await db.query(
+    "insert into auth.users(id,email,raw_user_meta_data) values($1,'pending@example.test',jsonb_build_object('display_name','Pending Client'))",
+    [publicClient],
+  );
+  const pending = (
+    await db.query<{ approval_status: string }>(
+      "select approval_status from public.profiles where id=$1",
+      [publicClient],
+    )
+  ).rows[0];
+  expect(pending.approval_status).toBe("pending");
+  expect(
+    (
+      await db.query<{ kind: string; client_id: string; href: string }>(
+        "select kind,client_id,href from public.inbox_notifications where user_id=$1 and client_id=$2",
+        [admin, publicClient],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      kind: "client_signup",
+      client_id: publicClient,
+      href: `/users?tab=pending&highlight=${publicClient}`,
+    },
+  ]);
+  const newProfile = (
+    await db.query<{ retention_months: number }>(
+      "insert into public.candidate_profiles(workspace_id,identifier,candidate_name) values($1,'TWO-MONTH','Default check') returning retention_months",
+      [workspace],
+    )
+  ).rows[0];
+  expect(newProfile.retention_months).toBe(2);
+  await asUser(admin);
+  const managedClient = (await db.query<{ reserve_client_account: string }>(
+    "select public.reserve_client_account('managed@example.test','Managed Client')",
+  )).rows[0].reserve_client_account;
+  await db.exec("reset role");
+  await expect(db.query(
+    "insert into auth.users(id,email,raw_user_meta_data) values('00000000-0000-4000-8000-000000000013','managed@example.test','{}')",
+  )).rejects.toThrow("reserved for a managed account");
+  await db.query(
+    "insert into auth.users(id,email,raw_user_meta_data) values($1,'managed@example.test',jsonb_build_object('display_name','Managed Client'))",
+    [managedClient],
+  );
+  expect(
+    (
+      await db.query<{ approval_status: string }>(
+        "select approval_status from public.profiles where id=$1",
+        [managedClient],
+      )
+  ).rows[0].approval_status,
+  ).toBe("approved");
+  expect(
+    (
+      await db.query(
+        "select 1 from public.inbox_notifications where client_id=$1",
+        [managedClient],
+      )
+    ).rows,
+  ).toHaveLength(0);
+  await asUser(admin);
+  expect((await db.query("select id from public.inbox_notifications where client_id=$1", [publicClient])).rows).toHaveLength(1);
+  await asUser(bidder);
+  expect((await db.query("select id from public.inbox_notifications where client_id=$1", [publicClient])).rows).toHaveLength(0);
+  await asUser(admin);
+  await db.query("select public.review_client($1,'approved',null)", [publicClient]);
+  const resolved = (
+    await db.query<{ read_at: string | null; resolved_at: string | null }>(
+      "select read_at,resolved_at from public.inbox_notifications where user_id=$1 and client_id=$2",
+      [admin, publicClient],
+    )
+  ).rows[0];
+  expect(resolved.read_at).not.toBeNull();
+  expect(resolved.resolved_at).not.toBeNull();
+  await expect(db.query(
+    "select public.mark_notification_read((select id from public.inbox_notifications where user_id=$1 and client_id=$2),false)",
+    [admin, publicClient],
+  )).rejects.toThrow("Notification not found or resolved");
 });

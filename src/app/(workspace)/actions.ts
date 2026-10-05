@@ -185,8 +185,11 @@ export async function setClientMessageStatusAction(idValue: string, status: "act
 }
 export async function getInboxNotifications() {
   return perform(async () => {
-    const { supabase } = await getContext();
-    const { data, error } = await supabase.from("inbox_notifications").select("*").order("created_at", { ascending: false }).limit(100);
+    const { supabase, profile } = await getContext();
+    if (profile.role === "client") throw new Error("Access denied");
+    let query = supabase.from("inbox_notifications").select("*").order("created_at", { ascending: false }).limit(100);
+    query = profile.role === "admin" ? query.eq("kind", "client_signup") : query.eq("kind", "message");
+    const { data, error } = await query;
     if (error) throw new Error(error.message);
     return data;
   }, false);
@@ -397,7 +400,9 @@ export async function createClientAccount(form: FormData) {
     if (profile.role !== "admin") throw new Error("Access denied");
     const email = z.email().parse(text(form, "email")).toLowerCase();
     const name = z.string().min(1).max(100).parse(text(form, "display_name"));
+    const reservation = await rpc("reserve_client_account", { p_email: email, p_name: name });
     const { data, error } = await adminClient().auth.admin.createUser({
+      id: reservation,
       email,
       password: "123456",
       email_confirm: true,

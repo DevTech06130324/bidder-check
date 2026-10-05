@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -10,7 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import {
   BriefcaseBusiness,
   CheckCheck,
@@ -24,13 +24,26 @@ import {
   CalendarCheck2,
 } from "lucide-react";
 import type { WorkspaceData } from "@/lib/data";
-import { summarizeEarnings, usd } from "@/lib/domain";
+import {
+  BID_TIMEZONE,
+  formatCTDateBucket,
+  summarizeEarnings,
+  usd,
+} from "@/lib/domain";
 import { PageHeading } from "./common";
 import { BidDialog, BidWorkspace } from "./bids";
 export function Dashboard({ data }: { data: WorkspaceData }) {
   const [days, setDays] = useState(30);
-  const timezone = data.workspaces[0]?.timezone ?? "America/Chicago";
-  const now = new Date();
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const today = formatInTimeZone(now, BID_TIMEZONE, "yyyy-MM-dd");
+    const tomorrow = new Date(`${today}T00:00:00Z`);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const nextMidnight = fromZonedTime(`${tomorrow.toISOString().slice(0, 10)}T00:00:00`, BID_TIMEZONE);
+    const timer = window.setTimeout(() => setNow(new Date()), Math.max(1, nextMidnight.getTime() - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [now]);
+  const timezone = BID_TIMEZONE;
   const throughDate = formatInTimeZone(now, timezone, "yyyy-MM-dd");
   const firstDay = new Date(`${throughDate}T00:00:00Z`);
   firstDay.setUTCDate(firstDay.getUTCDate() - (days - 1));
@@ -40,12 +53,8 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
   );
   const liveFound = data.bids.filter(
     (b) =>
-      formatInTimeZone(
-        b.found_at,
-        data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ??
-          timezone,
-        "yyyy-MM-dd",
-      ) >= fromDate,
+      formatInTimeZone(b.found_at, timezone, "yyyy-MM-dd") >= fromDate &&
+      formatInTimeZone(b.found_at, timezone, "yyyy-MM-dd") <= throughDate,
   );
   const foundHistory = retained.filter((row) => row.metric === "found").reduce((sum, row) => sum + row.record_count, 0);
   const appliedHistory = retained.filter((row) => row.metric === "applied_activity").reduce((sum, row) => sum + row.record_count, 0);
@@ -58,19 +67,15 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
   const interviewInvitations = interviewCohort.filter((b) => b.interview_scheduled).length + interviewHistory;
   const applied = data.bids.filter(
     (b) => b.applied && b.applied_at &&
-      formatInTimeZone(b.applied_at, data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ?? timezone, "yyyy-MM-dd") >= fromDate &&
-      formatInTimeZone(b.applied_at, data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ?? timezone, "yyyy-MM-dd") <= throughDate,
+      formatInTimeZone(b.applied_at, timezone, "yyyy-MM-dd") >= fromDate &&
+      formatInTimeZone(b.applied_at, timezone, "yyyy-MM-dd") <= throughDate,
   );
   const liveEarnings = summarizeEarnings(
     data.bids.filter(
       (b) =>
         b.first_applied_at &&
-        formatInTimeZone(
-          b.first_applied_at,
-          data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ??
-            timezone,
-          "yyyy-MM-dd",
-        ) >= fromDate,
+        formatInTimeZone(b.first_applied_at, timezone, "yyyy-MM-dd") >= fromDate &&
+        formatInTimeZone(b.first_applied_at, timezone, "yyyy-MM-dd") <= throughDate,
     ),
   );
   const earnings = {
@@ -82,7 +87,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
     d.setUTCDate(d.getUTCDate() + i);
     const date = d.toISOString().slice(0, 10);
     return {
-      date: formatInTimeZone(d, timezone, "MMM d"),
+      date: formatCTDateBucket(date),
       found: liveFound.filter(
         (b) => formatInTimeZone(b.found_at, timezone, "yyyy-MM-dd") === date,
       ).length + retained.filter((row) => row.metric === "found" && row.report_day === date).reduce((sum, row) => sum + row.record_count, 0),
@@ -192,7 +197,7 @@ export function Dashboard({ data }: { data: WorkspaceData }) {
             <div>
               <h2 className="font-semibold">Application activity</h2>
               <p className="mt-1.5 text-xs text-muted-foreground">
-                Small steps. Steady progress.
+                Daily totals grouped by Central Time (CT).
               </p>
             </div>
             <div className="flex gap-4 text-[10px] text-muted-foreground">

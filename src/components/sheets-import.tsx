@@ -66,6 +66,8 @@ export function SheetsImport({
     [busy, setBusy] = useState(false),
     [checking, setChecking] = useState(false);
   const request = useRef(crypto.randomUUID());
+  const frozen = useRef<{ resume: string; date: string; rows: ImportRow[]; sourceRows: number[]; requestId: string } | null>(null);
+  const [uncertain, setUncertain] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const localErrors = useMemo(
     () => rows ? validateImportRows(rows).map((entry) => ({ ...entry, row: sourceRows[entry.row - 1] ?? entry.row })) : [],
@@ -153,24 +155,48 @@ export function SheetsImport({
     request.current = crypto.randomUUID();
   }
   async function submit() {
-    if (!rows) return;
-    const allowed = rows
-      .map((row, index) => ({ row, originalRow: sourceRows[index] ?? index + 1 }))
-      .filter(({ originalRow }) => !errors.some((entry) => entry.row === originalRow));
-    if (!allowed.length) return;
+    if (!rows || busy) return;
+    let payload = frozen.current;
+    let importSent = false;
     setAttempted(true);
     setBusy(true);
     setError("");
     try {
-      const result = await importBids(resume, date, allowed.map((item) => item.row), request.current);
-      if (result.error) setError(result.error);
+      if (!payload) {
+        if (!bidder || !resume || !date) throw new Error("Choose a bidder, resume, and Added date before importing.");
+        if (!rows.length) throw new Error("Add at least one bid row to import.");
+        const checked = await checkBidImport(resume, date, rows);
+        if (checked.error) throw new Error(checked.error);
+        const freshErrors = (checked.data ?? []).map((entry) => ({ ...entry, row: sourceRows[entry.row - 1] ?? entry.row }));
+        const signature = (issues: ImportError[]) => issues.map((entry) => `${entry.row}:${entry.field}:${entry.code}:${entry.message}`).sort().join("|");
+        if (signature(freshErrors) !== signature(serverErrors)) {
+          setServerErrors(freshErrors);
+          setError("Profile restrictions changed. Review the updated row results, then click import again.");
+          return;
+        }
+        const blockedRows = new Set([...localErrors, ...freshErrors].map((entry) => entry.row));
+        const allowedIndexes = rows.map((_, index) => index).filter((index) => !blockedRows.has(sourceRows[index] ?? index + 1));
+        const allowed = allowedIndexes.map((index) => rows[index]);
+        if (!allowed.length) {
+          setError("No rows are allowed. Fix or remove blocked rows, then try again.");
+          return;
+        }
+        payload = { resume, date, rows: allowed, sourceRows: allowedIndexes.map((index) => sourceRows[index] ?? index + 1), requestId: request.current };
+      }
+      importSent = true;
+      const result = await importBids(payload.resume, payload.date, payload.rows, payload.requestId);
+      if (result.error) { frozen.current = null; setUncertain(false); setError(result.error); }
       else if (result.data?.errors) {
+        frozen.current = null;
+        setUncertain(false);
         setServerErrors(result.data.errors.map((entry) => ({
-          ...entry,
-          row: allowed[entry.row - 1]?.originalRow ?? entry.row,
+          ...entry, row: payload!.sourceRows[entry.row - 1] ?? entry.row,
         })));
+        setError("The latest validation changed. Review the updated results and click import again.");
         setAttempted(false);
       } else if (result.data?.ids) {
+        frozen.current = null;
+        setUncertain(false);
         toast.success(
           result.data.purgedCount
             ? `Original import completed; ${result.data.purgedCount} bids were subsequently deleted. No bids recreated.`
@@ -178,10 +204,13 @@ export function SheetsImport({
         );
         onSuccess(result.data);
       }
-    } catch {
-      setError(
-        "Connection interrupted. Retry keeps the same request and will not duplicate bids.",
-      );
+    } catch (e) {
+      if (importSent && payload) {
+        // Keep the exact payload and request ID after a response is lost.
+        frozen.current = payload;
+        setUncertain(true);
+      }
+      setError(importSent ? "Connection interrupted. Retry keeps the same request and will not duplicate bids." : e instanceof Error ? e.message : "Could not validate this import. Try again.");
     } finally {
       setBusy(false);
     }
@@ -195,7 +224,7 @@ export function SheetsImport({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) onClose();
+        if (!open && !busy && !uncertain) onClose();
       }}
     >
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl">
@@ -365,7 +394,7 @@ export function SheetsImport({
                     <th className="border p-2">{sourceRows[i] ?? i + 1}</th>
                       {importFields.map((f) => {
                         const issues = errors.filter(
-                          (e) => e.row === i + 1 && e.field === f,
+                          (e) => e.row === (sourceRows[i] ?? i + 1) && e.field === f,
                         );
                         return (
                           <td key={f} className="min-w-40 border p-1">
@@ -374,7 +403,7 @@ export function SheetsImport({
                           aria-invalid={!!issues.length}
                               className="h-8 text-xs"
                               value={row[f]}
-                              disabled={busy}
+                              disabled={busy || uncertain}
                               onChange={(e) =>
                                 changeRows(
                                   rows.map((r, j) =>
@@ -396,7 +425,7 @@ export function SheetsImport({
                           aria-label={`Remove row ${sourceRows[i] ?? i + 1}`}
                           size="sm"
                           variant="ghost"
-                          disabled={busy}
+                          disabled={busy || uncertain}
                           onClick={() =>
                             changeRows(rows.filter((_, j) => j !== i), sourceRows.filter((_, j) => j !== i))
                           }
@@ -426,7 +455,7 @@ export function SheetsImport({
             <div className="flex gap-2">
               <Button
                 variant="outline"
-                disabled={busy}
+                disabled={busy || uncertain}
                 onClick={() => {
                   setRows(null);
                   setChecking(false);
@@ -436,15 +465,15 @@ export function SheetsImport({
                 Back to mapping
               </Button>
               <Button
-                disabled={busy || checking || !rows.length || !rows.some((_, i) => !errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1))) || !!error}
+                disabled={busy}
                 onClick={submit}
               >
-                {busy ? "Importing..." : `Import ${rows.filter((_, i) => !errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1))).length} allowed bids`}
+                {busy ? "Validating and importing..." : uncertain ? "Retry same import" : `Import ${rows.filter((_, i) => !errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1))).length} allowed bids`}
               </Button>
               {error && (
                 <Button
                   variant="outline"
-                  disabled={busy}
+                  disabled={busy || uncertain}
                   onClick={() => {
                     if (attempted) {
                       void submit();

@@ -206,6 +206,21 @@ test("Sheets mapping keeps blocked rows visible and allows valid rows to import"
     page.getByRole("button", { name: "Import 1 allowed bids", exact: true }),
   ).toBeEnabled();
 });
+test("Sheets import stays available when every row is blocked and explains the result", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3001/bids?block-import");
+  await page.getByRole("button", { name: "Paste from Sheets", exact: true }).click();
+  await page.getByLabel("Import bidder", { exact: true }).selectOption("bidder-0");
+  await page.getByLabel("Import resume", { exact: true }).selectOption("resume-0");
+  await page.getByLabel("Copied Google Sheets cells").fill("Acme\tEngineer\thttps://example.com/one");
+  await page.getByRole("button", { name: "Read columns" }).click();
+  await page.getByRole("button", { name: "Preview bids" }).click();
+  const importButton = page.getByRole("button", { name: "Import 0 allowed bids", exact: true });
+  await expect(importButton).toBeEnabled();
+  await importButton.click();
+  await expect(page.getByRole("alert")).toContainText("No rows are allowed");
+});
 test("inline conflict preserves the draft and requires review before retry", async ({
   page,
 }) => {

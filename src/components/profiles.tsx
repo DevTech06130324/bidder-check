@@ -148,7 +148,7 @@ function ProfileRulesDialog({
   return <Dialog open={open} onOpenChange={setOpen}>
     <DialogTrigger asChild><Button variant="outline">Bid restrictions</Button></DialogTrigger>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-      <DialogHeader><DialogTitle>Bid restrictions and retention</DialogTitle><DialogDescription>Rules apply to all bidders assigned to {candidate.identifier}. Substrings match literally without case sensitivity.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>Bid restrictions and retention</DialogTitle><DialogDescription>Rules apply to all bidders assigned to {candidate.identifier}. Substrings match literally without case sensitivity. New profiles default to two calendar months of retention.</DialogDescription></DialogHeader>
       <form className="space-y-4" action={(form) => {
         const nextRetention = String(form.get("retention") ?? "").trim();
         const retentionMonths = nextRetention ? Number(nextRetention) : null;

@@ -7,6 +7,7 @@ import {
   dateInRange,
   validateUpload,
   chicagoDateRange,
+  formatCTDateBucket,
 } from "@/lib/domain";
 
 describe("job URL identity", () => {
@@ -24,6 +25,10 @@ describe("job URL identity", () => {
     expect(() => normalizeJobUrl("javascript:alert(1)")).toThrow();
     expect(() => normalizeJobUrl("https://user:pass@example.com")).toThrow();
   });
+});
+it("formats dashboard date keys without converting CT midnight into the prior day", () => {
+  expect(formatCTDateBucket("2026-10-05")).toBe("Oct 5");
+  expect(formatCTDateBucket("2026-03-08")).toBe("Mar 8");
 });
 it("Chicago day bounds follow DST and UTC midnight does not start a new CT day", () => {
   expect(

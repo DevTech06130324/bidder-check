@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Search, ArrowUpRight, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
@@ -356,9 +356,13 @@ function ApprovalActions({ person }: { person: Row<"profiles"> }) {
     </div>
   );
 }
-export function People({ data }: { data: WorkspaceData }) {
+export function People({ data, initialTab = "active", highlightId }: { data: WorkspaceData; initialTab?: string; highlightId?: string }) {
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState("active");
+  const [tab, setTab] = useState(initialTab);
+  useEffect(() => {
+    if (!highlightId) return;
+    window.requestAnimationFrame(() => document.getElementById(`person-${highlightId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }, [highlightId]);
   const admin = data.profile.role === "admin";
   const matches = (p: Row<"profiles">) =>
     `${p.display_name} ${p.email} ${p.id}`
@@ -382,7 +386,7 @@ export function People({ data }: { data: WorkspaceData }) {
   function personRow(p: Row<"profiles">) {
     const b = data.bidders.find((b) => b.user_id === p.id);
     return (
-      <div key={p.id} className="flex flex-wrap items-center gap-3 p-4">
+      <div id={`person-${p.id}`} key={p.id} className={`flex flex-wrap items-center gap-3 p-4 ${highlightId === p.id ? "bg-primary/5 ring-2 ring-inset ring-primary" : ""}`}>
         <span className="flex size-10 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
           {initials(p.display_name || p.email)}
         </span>

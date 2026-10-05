@@ -80,6 +80,16 @@ export async function checkBidImport(
   _date: string,
   rows: import("@/lib/sheets").ImportRow[],
 ) {
+  if (new URLSearchParams(window.location.search).has("block-import")) {
+    return {
+      data: rows.map((_, index) => ({
+        row: index + 1,
+        field: "url",
+        code: "profile_restriction",
+        message: "This job URL is blocked by a profile restriction.",
+      })),
+    };
+  }
   const { validateImportRows } = await import("@/lib/sheets");
   return { data: validateImportRows(rows) };
 }

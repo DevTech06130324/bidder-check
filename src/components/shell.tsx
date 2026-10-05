@@ -65,10 +65,10 @@ export function Shell({
     return () => window.removeEventListener("focus", refresh);
   }, [router]);
   useEffect(() => {
-    if (profile.role !== "bidder") return;
+    if (profile.role === "client") return;
     const update = async () => {
       const result = await getInboxNotifications();
-      if (!result.error) setUnread((result.data ?? []).filter((row) => !row.read_at).length);
+      if (!result.error) setUnread((result.data ?? []).filter((row) => !row.read_at && !row.resolved_at).length);
     };
     const timer = window.setInterval(() => void update(), 30000);
     window.addEventListener("focus", update);
@@ -223,7 +223,7 @@ export function Shell({
             </span>
           </div>
           <div className="ml-auto flex items-center gap-3">
-            {profile.role === "bidder" && <Link href="/notifications" aria-label={`${unread} unread notifications`} className="relative rounded-md p-2 text-muted-foreground hover:bg-secondary"><Bell size={17}/>{unread>0&&<span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">{unread>9?"9+":unread}</span>}</Link>}
+            {profile.role !== "client" && <Link href="/notifications" aria-label={`${unread} unread notifications`} className="relative rounded-md p-2 text-muted-foreground hover:bg-secondary"><Bell size={17}/>{unread>0&&<span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">{unread>9?"9+":unread}</span>}</Link>}
             <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] text-muted-foreground sm:flex">
               <span className="size-1.5 rounded-full bg-emerald-500" /> Private
               workspace

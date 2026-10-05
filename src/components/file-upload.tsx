@@ -6,6 +6,43 @@ import { createClient } from "@/lib/client";
 import { prepareUpload, finalizeUpload } from "@/app/(workspace)/actions";
 import { validateUpload, uploadTypes } from "@/lib/domain";
 import { Button } from "./ui/button";
+export async function uploadVerifiedFile(
+  kind: "resume" | "screenshot",
+  target: string,
+  file: File,
+  onProgress?: (phase: string, value: number) => void,
+) {
+  validateUpload(kind, file.type, file.size);
+  onProgress?.("Preparing upload", 0);
+  const prepared = await prepareUpload(kind, target, file.name, file.type, file.size);
+  if (prepared.error || !prepared.data) throw new Error(prepared.error ?? "Could not prepare upload.");
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("Please sign in again.");
+  onProgress?.("Uploading", 0);
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/private-files/${prepared.data!.storage_path}`);
+    xhr.setRequestHeader("Authorization", `Bearer ${session.access_token}`);
+    xhr.setRequestHeader("apikey", process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!);
+    xhr.setRequestHeader("Content-Type", file.type);
+    xhr.timeout = 120000;
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const progress = Math.round((event.loaded / event.total) * 100);
+        onProgress?.("Uploading", progress);
+      }
+    };
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("Upload failed. Please choose the file again to retry."));
+    xhr.onerror = () => reject(new Error("Connection lost. Please try again."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Please try again."));
+    xhr.send(file);
+  });
+  onProgress?.("Verifying file", 100);
+  const finalized = await finalizeUpload(prepared.data.id);
+  if (finalized.error || !finalized.data) throw new Error(finalized.error ?? "Verification failed.");
+  return finalized.data;
+}
 export function FileUpload({
   kind,
   target,
@@ -36,63 +73,12 @@ export function FileUpload({
     retryFile.current = file;
     setError("");
     try {
-      validateUpload(kind, file.type, file.size);
       setProgress(0);
-      setPhase("Preparing upload");
-      const prepared = await prepareUpload(
-        kind,
-        target,
-        file.name,
-        file.type,
-        file.size,
-      );
-      if (prepared.error || !prepared.data)
-        throw new Error(prepared.error ?? "Could not prepare upload.");
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) throw new Error("Please sign in again.");
-      setPhase("Uploading");
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open(
-          "POST",
-          `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/private-files/${prepared.data!.storage_path}`,
-        );
-        xhr.setRequestHeader("Authorization", `Bearer ${session.access_token}`);
-        xhr.setRequestHeader(
-          "apikey",
-          process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
-        );
-        xhr.setRequestHeader("Content-Type", file.type);
-        xhr.timeout = 120000;
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable)
-            setProgress(Math.round((e.loaded / e.total) * 100));
-        };
-        xhr.onload = () =>
-          xhr.status >= 200 && xhr.status < 300
-            ? resolve()
-            : reject(
-                new Error(
-                  "Upload failed. Please choose the file again to retry.",
-                ),
-              );
-        xhr.onerror = () =>
-          reject(new Error("Connection lost. Please try again."));
-        xhr.ontimeout = () =>
-          reject(new Error("Upload timed out. Please try again."));
-        xhr.send(file);
-      });
-      setPhase("Verifying file");
-      const finalized = await finalizeUpload(prepared.data.id);
-      if (finalized.error || !finalized.data)
-        throw new Error(finalized.error ?? "Verification failed.");
+      const id = await uploadVerifiedFile(kind, target, file, (nextPhase, value) => { setPhase(nextPhase); setProgress(value); });
       toast.success(
         kind === "resume" ? "Resume file saved" : "Screenshot uploaded",
       );
-      onUploaded?.(finalized.data);
+      onUploaded?.(id);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Upload failed.";
       setError(message);
