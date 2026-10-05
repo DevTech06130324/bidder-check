@@ -1,5 +1,59 @@
 # Deployment handoff
 
+## Latest release — signup alerts and workflow fixes, 2026-10-05
+
+Implementation commit `54cc5fe` is pushed to `main` and READY in production as
+`dpl_CXK9o3BC9hyAesqfQrSzEB283EhU` at https://bidder-check.vercel.app.
+Staging is `dpl_HPqHzBVE3aNNqxLn2eAVWXK41rRz` at
+https://bidder-check-staging.vercel.app. Both databases include migrations
+`202610050004_signup_alerts_retention.sql` and
+`202610050005_push_device_ownership.sql`; the production ledger matches every
+local migration. This release performs no customer-data reset.
+
+Public registrations create private admin approval alerts with authenticated
+review links. Admin inbox/push controls coexist with message management. New
+candidate profiles default to two calendar months; existing retention settings
+are preserved. Assignment dialogs select and finalize a PDF in one workflow,
+retaining drafts and incomplete IDs for retry. Import remains clickable for
+validation and freezes uncertain submissions for idempotent retry. Dashboard
+bucket labels and boundaries use CT without shifting calendar dates.
+
+The earlier HTTP-200-only notification checks were insufficient: the session
+Proxy redirected bearer-only worker requests to login HTML. This release
+exempts the exact cron endpoints and public PWA assets from session handling;
+cron endpoints still authenticate their server-only bearers. Hosted checks now
+require JSON. Both Vault endpoint URLs use their stable environment aliases.
+Supabase scheduler calls returned HTTP 200 with JSON (`schedule.occurrences`
+and `pushConfigured: true`) in staging (request 540) and production (request 435).
+A staging scheduled message published through the real HTTP worker exactly once
+across retries, without calling the schedule-processing RPC directly.
+
+Verification: lint, typecheck, production build, 99 unit/database cases
+(43 database), and 70 desktop/mobile browser cases passed. The full hosted staging
+journey passed 21 checkpoints, including invalid-PDF retry on the same assignment,
+private downloads, application approval, evidence/earnings, import concurrency,
+retention, and synthetic cleanup. Production smoke verified private signup
+alerts, pending-account routing and authorization, password change, sign-out,
+worker 401 without a bearer, and JSON with a valid bearer. Generated verification
+accounts/files were removed; the designated administrator remains active.
+
+VAPID configuration is now present with separate staging/production key pairs.
+Real browser push delivery remains unverified: Chrome/Edge provider registration
+was refused in the automated environment. Provider errors are visible and the
+inbox stays usable; service-worker activation is awaited before subscription.
+Do not interpret `pushConfigured` or provider acceptance as delivery or reading.
+
+`scripts/production-smoke.mjs` requires the production worker credential in
+`NOTIFICATION_WORKER_SECRET` as well as the usual local Supabase credentials.
+The release check sourced it from Vault into the test process only, without
+printing it or writing it into Git. GitHub run
+[37373752261](https://github.com/DevTech06130324/bidder-check/actions/runs/37373752261)
+completed successfully, including lint, typecheck, tests, build, and browser checks. The
+previous run could not acquire a hosted runner and executed no verification steps.
+
+The sections below are historical release records; this section supersedes their
+older notification-verification and VAPID status.
+
 ## Admin visibility fix — 2026-10-01
 
 The Users hierarchy previously rendered only client-owned groups, hiding bidders
