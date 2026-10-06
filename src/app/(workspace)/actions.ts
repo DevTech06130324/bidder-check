@@ -9,6 +9,7 @@ import {
   chicagoDateRange,
 } from "@/lib/domain";
 import type { Database } from "@/lib/database.types";
+import type { BidListQuery, BidListResult } from "@/lib/bid-list";
 import { createHash } from "node:crypto";
 import { fromZonedTime } from "date-fns-tz";
 import { z } from "zod";
@@ -591,32 +592,36 @@ export async function getBidRows(
   from: string,
   to: string,
   trash: boolean,
-  bidderId?: string,
+  bidderId: string | undefined,
+  query: BidListQuery,
 ) {
   // Reads deliberately do not invalidate the route (thumbnail reads must not loop).
   try {
     const { supabase } = await getContext();
     const bounds = chicagoDateRange(mode, from, to);
-    const rows: Database["public"]["Tables"]["bids"]["Row"][] = [];
-    for (let offset = 0; ; offset += 1000) {
-      let query = supabase
-        .from("bids")
-        .select("*")
-        .order("found_at", { ascending: false })
-        .order("id")
-        .range(offset, offset + 999);
-      query = trash
-        ? query.not("deleted_at", "is", null)
-        : query.is("deleted_at", null);
-      if (bounds.from) query = query.gte("found_at", bounds.from);
-      if (bounds.to) query = query.lt("found_at", bounds.to);
-      if (bidderId) query = query.eq("bidder_id", z.uuid().parse(bidderId));
-      const { data, error } = await query;
-      if (error) throw new Error(error.message);
-      rows.push(...data);
-      if (data.length < 1000) break;
-    }
-    return { data: rows };
+    const filters = Object.fromEntries(query.columnFilters.map((filter) => [filter.id, filter.value]));
+    const { data, error } = await supabase.rpc("list_bids", {
+      p_query: {
+        search: z.string().max(500).parse(query.search),
+        status: z.enum(["all", "applied", "unapplied", "pending_review"]).parse(query.status),
+        arrangement: z.string().max(20).parse(query.arrangement),
+        resume: z.string().max(64).parse(query.resume),
+        bidder: z.string().max(64).parse(query.bidder),
+        source: z.string().max(200).parse(query.source),
+        job: z.string().max(20).parse(query.job),
+        columnFilters: filters,
+        sorting: query.sorting.slice(0, 1),
+        pageIndex: z.number().int().min(0).max(100000).parse(query.pageIndex),
+        pageSize: z.number().int().min(1).max(100).parse(query.pageSize),
+        rangeFrom: bounds.from ?? null,
+        rangeTo: bounds.to ?? null,
+        trash,
+        scopeBidderId: bidderId ? z.uuid().parse(bidderId) : null,
+      },
+    });
+    if (error) throw new Error(error.message);
+    const result = data as unknown as BidListResult;
+    return { data: result };
   } catch (error) {
     return {
       error: error instanceof Error ? error.message : "Could not load bids",
@@ -700,6 +705,37 @@ export async function importBids(
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not complete import.", uncertain: sent };
   }
+}
+
+export async function reconcileBidTargets(targets: BidTarget[], trash: boolean) {
+  return perform(async () => {
+    const valid = z.array(z.object({ id: z.uuid(), version: z.number().int().nonnegative() })).max(500).parse(targets);
+    return (await rpc("reconcile_bid_targets", { p_targets: valid, p_trash: trash })) as string[];
+  }, false);
+}
+
+export async function manualApplyBidsAction(input: {
+  targets: BidTarget[];
+  localTime: string;
+  reason: string;
+  requestId: string;
+}): Promise<Result<{ applied: number; unchanged: number }>> {
+  return perform(async () => {
+    const { profile } = await getContext();
+    if (profile.role === "bidder") throw new Error("Only clients and admins can manually apply bids");
+    const targets = z.array(z.object({ id: z.uuid(), version: z.number().int().nonnegative() })).min(1).max(500).parse(input.targets);
+    const localTime = z.string().min(16).max(16).parse(input.localTime);
+    const reason = z.string().trim().min(1).max(1000).parse(input.reason);
+    const requestId = z.uuid().parse(input.requestId);
+    const appliedAt = fromZonedTime(localTime, "America/Chicago");
+    if (!Number.isFinite(appliedAt.getTime())) throw new Error("Choose a valid Applied time in CT");
+    return (await rpc("manual_apply_bids", {
+      p_targets: targets,
+      p_applied_at: appliedAt.toISOString(),
+      p_reason: reason,
+      p_request: requestId,
+    })) as { applied: number; unchanged: number };
+  });
 }
 
 export async function importReviewedBids(
@@ -851,5 +887,30 @@ export async function getDashboardPerformance(input: {
       p_group: z.enum(["profile", "bidder", "assignment"]).parse(input.group ?? "profile"),
     });
     return result as unknown as DashboardReport;
+  }, false);
+}
+
+export type EarningsReport = {
+  totals: { count: number; cents: number; resumes: number; retainedCount: number; trackedApplications: number; trackedInterviews: number; excludedInterviewCount: number };
+  groups: { id: string; label: string; sub: string; count: number; cents: number; applied: number; interviews: number }[];
+};
+export async function getEarningsPerformance(input: {
+  from?: string;
+  to?: string;
+  workspace?: string;
+  bidder?: string;
+  profile?: string;
+  group: "profile" | "bidder" | "assignment";
+}) {
+  return perform(async () => {
+    const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    return (await rpc("earnings_performance", {
+      p_from: input.from ? date.parse(input.from) : null,
+      p_to: input.to ? date.parse(input.to) : null,
+      p_workspace: input.workspace ? z.uuid().parse(input.workspace) : null,
+      p_bidder: input.bidder ? z.uuid().parse(input.bidder) : null,
+      p_profile: input.profile ? z.uuid().parse(input.profile) : null,
+      p_group: z.enum(["profile", "bidder", "assignment"]).parse(input.group),
+    })) as unknown as EarningsReport;
   }, false);
 }

@@ -104,6 +104,7 @@ export const fixture: WorkspaceData = {
   resumes,
   candidateProfiles,
   historicalAggregates: [],
+  bidCounts: {},
   invitations: [],
   bids: companies.map((company, i) => ({
     id: `bid-${i}`,
@@ -118,6 +119,7 @@ export const fixture: WorkspaceData = {
     arrangement: i % 3 === 0 ? "hybrid" : "remote",
     job_status: "open",
     applied: i % 3 !== 0,
+    application_method: i % 3 !== 0 ? "screenshot" : null,
     found_at: new Date(Date.now() - i * 86400000).toISOString(),
     applied_at: i % 3 !== 0 ? now : null,
     first_applied_at: i % 3 !== 0 ? now : null,

@@ -1,81 +1,43 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Wallet, CheckCheck, FileText } from "lucide-react";
-import type { WorkspaceData } from "@/lib/data";
-import { usd, summarizeEarnings, dateInRange } from "@/lib/domain";
+import { usd } from "@/lib/domain";
 import { PageHeading, Field, EmptyState } from "./common";
 import { Button } from "./ui/button";
+import { getEarningsPerformance, type EarningsReport } from "@/app/(workspace)/actions";
 export function Earnings({
-  data,
   bidderId,
   embedded = false,
 }: {
-  data: WorkspaceData;
   bidderId?: string;
   embedded?: boolean;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [group, setGroup] = useState("bidder");
-  const records = data.bids.filter(
-    (b) =>
-      (!bidderId || b.bidder_id === bidderId) &&
-      b.first_applied_at &&
-      dateInRange(
-        b.first_applied_at,
-        from,
-        to,
-        data.workspaces.find((w) => w.id === b.workspace_id)?.timezone ??
-          "America/Chicago",
-      ),
-  );
-  const history = data.historicalAggregates.filter((row) =>
-    row.metric === "earning" && (!bidderId || row.bidder_id === bidderId) &&
-    (!from || row.report_day >= from) && (!to || row.report_day <= to),
-  );
-  const liveTotal = summarizeEarnings(records);
-  const total = {
-    count: liveTotal.count + history.reduce((sum, row) => sum + row.record_count, 0),
-    cents: liveTotal.cents + history.reduce((sum, row) => sum + Number(row.earned_cents), 0),
-  };
-  const groups = (
-    group === "bidder"
-      ? data.bidders
-          .filter((b) => !bidderId || b.user_id === bidderId)
-          .map((b) => ({
-            id: b.user_id,
-            label:
-              data.profiles.find((p) => p.id === b.user_id)?.display_name ??
-              "Bidder",
-            sub: data.profiles.find((p) => p.id === b.user_id)?.email ?? "",
-            rows: records.filter((r) => r.bidder_id === b.user_id),
-          }))
-      : data.resumes
-          .filter((r) => !bidderId || r.bidder_id === bidderId)
-          .map((r) => ({
-            id: r.id,
-            label: data.candidateProfiles.find((p) => p.id === r.profile_id)?.identifier ?? "Profile",
-            sub: `${data.candidateProfiles.find((p) => p.id === r.profile_id)?.candidate_name ?? "Candidate"} · ${data.profiles.find((p) => p.id === r.bidder_id)?.display_name ?? "Bidder"}`,
-            rows: records.filter((b) => b.resume_id === r.id),
-          }))
-  ).map((g) => {
-    const retained = history.filter((row) => (group === "bidder" ? row.bidder_id : row.resume_id) === g.id);
-    const summary = summarizeEarnings(g.rows);
-    return {
-      ...g,
-      summary: {
-        count: summary.count + retained.reduce((sum, row) => sum + row.record_count, 0),
-        cents: summary.cents + retained.reduce((sum, row) => sum + Number(row.earned_cents), 0),
-      },
-    };
-  });
+  const [report, setReport] = useState<EarningsReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let current = true;
+    void getEarningsPerformance({ from: from || undefined, to: to || undefined, bidder: bidderId, group: group === "bidder" ? "bidder" : "assignment" }).then((result) => {
+      if (!current) return;
+      if (result.error || !result.data) setError(result.error ?? "Earnings report is unavailable.");
+      else { setReport(result.data); setError(""); }
+      setLoading(false);
+    });
+    return () => { current = false; };
+  }, [from, to, group, bidderId, refresh]);
+  const total = report?.totals ?? { count: 0, cents: 0, resumes: 0, retainedCount: 0, trackedApplications: 0, trackedInterviews: 0, excludedInterviewCount: 0 };
+  const groups = report?.groups ?? [];
   return (
     <>
       {!embedded && (
         <PageHeading
           eyebrow="THE VALUE OF YOUR PROGRESS"
           title="Every effort adds up."
-          description="Clear earnings, based on verified application screenshots."
+          description="Earnings from saved bid rates and first application dates."
         />
       )}
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
@@ -88,10 +50,7 @@ export function Earnings({
           },
           {
             label: "Resumes with earnings",
-            value: new Set([
-              ...records.filter((r) => r.applied).map((r) => r.resume_id),
-              ...history.map((row) => row.resume_id),
-            ]).size,
+            value: total.resumes,
             icon: FileText,
           },
         ].map((s) => (
@@ -146,12 +105,14 @@ export function Earnings({
             </Button>
           </div>
         </div>
-        {!groups.length ? (
+        {error && <p role="alert" className="mb-4 text-sm text-destructive">{error} <Button size="sm" variant="outline" onClick={() => { setLoading(true); setRefresh((value) => value + 1); }}>Retry</Button></p>}
+        {loading && <p className="py-8 text-center text-sm text-muted-foreground" role="status">Loading earnings…</p>}
+        {!loading && !groups.length ? (
           <EmptyState
             title="Progress you can put a number on"
-            description="Once an application has a screenshot and is marked applied, its earnings will appear here."
+            description="Once an application is marked applied, its earnings will appear here."
           />
-        ) : (
+        ) : !loading ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="border-y text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -175,10 +136,10 @@ export function Earnings({
                       </p>
                     </td>
                     <td className="p-3 text-right text-sm">
-                      {g.summary.count}
+                      {g.count}
                     </td>
                     <td className="py-4 text-right text-sm font-semibold">
-                      {usd(g.summary.cents)}
+                      {usd(g.cents)}
                     </td>
                   </tr>
                 ))}
@@ -196,14 +157,14 @@ export function Earnings({
               </tfoot>
             </table>
           </div>
-        )}
+        ) : null}
         <p className="mt-6 rounded-lg bg-background p-3 text-[11px] leading-5 text-muted-foreground">
           Earnings use each bid’s saved rate and first application date.
           Unapplied bids are excluded; reapplying restores the original amount.
           This is an earnings record, not a payment or payout balance. Each
           workspace’s reporting timezone is used.
         </p>
-        {!!history.length && <p className="mt-3 text-xs text-muted-foreground">Includes {history.reduce((sum, row) => sum + row.record_count, 0)} retained historical applications. Their individual application details have been removed.</p>}
+          {!!total.retainedCount && <p className="mt-3 text-xs text-muted-foreground">Includes {total.retainedCount} retained historical applications. Their individual application details have been removed.</p>}
       </section>
     </>
   );

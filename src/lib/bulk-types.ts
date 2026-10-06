@@ -1,4 +1,4 @@
-export type BidTarget = { id: string; version: number };
+export type BidTarget = { id: string; version: number; applied?: boolean };
 export type PurgeSnapshot = {
   id: string;
   count: number;

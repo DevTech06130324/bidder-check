@@ -265,6 +265,15 @@ it("validates a 476-row import against a profile with 10,000 retained bids withi
   expect(result.rows[0].errors).toEqual([]);
   // This local guard catches per-row rescans; hosted performance is checked separately.
   expect(elapsed).toBeLessThan(8000);
+  const listingStarted = performance.now();
+  const page = (await db.query<{ result: { rows: unknown[]; total: number } }>(
+    "select public.list_bids($1::jsonb) result",
+    [JSON.stringify({ trash: false, pageIndex: 0, pageSize: 25, sorting: [{ id: "found_at", desc: true }], columnFilters: {}, search: "" })],
+  )).rows[0].result;
+  const listingElapsed = performance.now() - listingStarted;
+  expect(page.rows).toHaveLength(25);
+  expect(page.total).toBeGreaterThanOrEqual(10000);
+  expect(listingElapsed).toBeLessThan(2000);
   await db.exec("reset role");
   await db.query("delete from public.bids where resume_id=$1 and company like 'Seed Company %'", [resume]);
 });
@@ -1909,6 +1918,80 @@ it("manager-created bids are approved and identity edits invalidate prepared pro
   await expect(
     db.query("select public.finalize_verified_file($1,$2,$3)", [proof, "d".repeat(64), bidder]),
   ).rejects.toThrow(/approval changed/i);
+});
+
+it("managers can atomically apply selected bids without proof at a chosen time", async () => {
+  const request = "00000000-0000-4000-8000-000000000090";
+  await asUser(client);
+  await db.query("select public.update_bidder($1,'Jordan',125,false)", [bidder]);
+  const target = (await db.query<{ id: string }>("select public.save_bid(null,$1,'Manual Test Co','Analyst','https://example.com/jobs/manual-test','LinkedIn','remote','open') id", [resume])).rows[0].id;
+  const expectedRate = (await db.query<{ rate: number }>("select coalesce(r.rate_override_cents,m.default_rate_cents) rate from public.resumes r join public.bidders m on m.user_id=r.bidder_id where r.id=$1", [resume])).rows[0].rate;
+  const targetVersion = (await db.query<{ version: number }>("select version from public.bids where id=$1", [target])).rows[0].version;
+  expect((await db.query<{ applied: boolean; review_status: string }>("select applied,review_status from public.bids where id=$1", [target])).rows[0]).toMatchObject({ applied: false, review_status: "approved" });
+  const appliedAt = (await db.query<{ stamp: string }>("select clock_timestamp() stamp")).rows[0].stamp;
+  const result = await db.query<{ result: { applied: number; unchanged: number } }>(
+    "select public.manual_apply_bids($1::jsonb,$2::timestamptz,$3,$4) result",
+    [[{ id: target, version: targetVersion }], appliedAt, "Verified with employer", request],
+  );
+  expect(result.rows[0].result).toMatchObject({ applied: 1, unchanged: 0 });
+  const saved = (await db.query<{ applied: boolean; evidence_file_id: string | null; rate_cents: number; applied_at: string; first_applied_at: string; application_method: string; review_status: string }>(
+    "select applied,evidence_file_id,rate_cents,applied_at,first_applied_at,application_method,review_status from public.bids where id=$1", [target],
+  )).rows[0];
+  expect(saved).toMatchObject({ applied: true, evidence_file_id: null, rate_cents: expectedRate, application_method: "manual", review_status: "approved", applied_at: appliedAt, first_applied_at: appliedAt });
+  const reportDay = formatInTimeZone(new Date(appliedAt), "America/Chicago", "yyyy-MM-dd");
+  const report = (await db.query<{ result: { totals: { count: number }; groups: { label: string; applied: number }[] } }>(
+    "select public.earnings_performance($1,$1,$2,null,null,'profile') result", [reportDay, workspace],
+  )).rows[0].result;
+  expect(report.totals.count).toBeGreaterThanOrEqual(1);
+  expect(report.groups.some((row) => row.applied >= 1)).toBe(true);
+  await db.query("select public.set_applied($1,false,null,'Corrected manual application record')", [target]);
+  expect((await db.query<{ applied: boolean; evidence_file_id: string | null }>("select applied,evidence_file_id from public.bids where id=$1", [target])).rows[0]).toMatchObject({ applied: false, evidence_file_id: null });
+  expect((await db.query<{ result: { applied: number; unchanged: number } }>("select public.manual_apply_bids($1::jsonb,$2::timestamptz,$3,$4) result", [[{ id: target, version: targetVersion }], appliedAt, "Verified with employer", request])).rows[0].result).toEqual({ applied: 1, unchanged: 0 });
+  expect((await db.query<{ applied: boolean }>("select applied from public.bids where id=$1", [target])).rows[0].applied).toBe(false);
+  expect((await db.query<{ applied_at: string }>("select applied_at from public.bids where id=$1", [target])).rows[0].applied_at).toEqual(appliedAt);
+});
+
+it("manual application rejects bidders and rolls back an invalid batch", async () => {
+  const request = "00000000-0000-4000-8000-000000000091";
+  const before = (await db.query<{ version: number; applied: boolean }>("select version,applied from public.bids where id=$1", [bid])).rows[0];
+  await asUser(bidder);
+  await expect(db.query("select public.manual_apply_bids($1::jsonb,$2::timestamptz,$3,$4)", [[{ id: bid, version: before.version }], "2026-10-05T18:30:00Z", "Manual", request])).rejects.toThrow();
+  await asUser(client);
+  const first = (await db.query<{ id: string }>("select public.save_bid(null,$1,'Other Co','Developer','https://example.com/jobs/manual-rate-a','LinkedIn','remote','open') id", [resume])).rows[0].id;
+  const second = (await db.query<{ id: string }>("select public.save_bid(null,$1,'Third Co','Developer','https://example.com/jobs/manual-rate-b','LinkedIn','remote','open') id", [resume])).rows[0].id;
+  await db.exec("reset role");
+  await db.query("update public.bidders set default_rate_cents=null where user_id=$1", [bidder]);
+  const firstVersion = (await db.query<{ version: number }>("select version from public.bids where id=$1", [first])).rows[0].version;
+  const secondVersion = (await db.query<{ version: number }>("select version from public.bids where id=$1", [second])).rows[0].version;
+  await asUser(client);
+  const appliedAt = (await db.query<{ stamp: string }>("select clock_timestamp() stamp")).rows[0].stamp;
+  await expect(db.query("select public.manual_apply_bids($1::jsonb,$2::timestamptz,$3,$4)", [[{ id: first, version: firstVersion }, { id: second, version: secondVersion }], appliedAt, "Manual", request])).rejects.toThrow(/rate/i);
+  expect((await db.query<{ applied: boolean }>("select applied from public.bids where id=$1", [first])).rows[0].applied).toBe(false);
+  expect((await db.query<{ applied: boolean }>("select applied from public.bids where id=$1", [second])).rows[0].applied).toBe(false);
+});
+
+it("lists bids with database filters and applies pagination before returning rows", async () => {
+  await asUser(client);
+  for (let i = 0; i < 12; i++) {
+    await db.query(
+      "select public.save_bid(null,$1,$2,'Pager',$3,'Custom source','remote','open')",
+      [resume, `Pager ${i}`, `https://pager.test/job/${i}`],
+    );
+  }
+  const result = (await db.query<{ result: { rows: { company: string }[]; total: number } }>(
+    "select public.list_bids($1::jsonb) result",
+    [JSON.stringify({ trash: false, rangeFrom: null, rangeTo: null, search: "Pager", columnFilters: { source: "Custom source" }, sorting: [{ id: "company", desc: true }], pageIndex: 1, pageSize: 5 })],
+  )).rows[0].result;
+  expect(result.rows).toHaveLength(5);
+  expect(result.total).toBe(12);
+  expect(result.rows[0].company).toBe("Pager 4");
+  await expect(db.query(
+    "select public.list_bids($1::jsonb)",
+    [JSON.stringify({ trash: false, bidder: other, pageIndex: 0, pageSize: 10 })],
+  )).resolves.toBeDefined();
+  await db.exec("reset role");
+  await db.query("delete from public.bid_events where bid_id in (select id from public.bids where company like 'Pager %')");
+  await db.query("delete from public.bids where company like 'Pager %'");
 });
 
 it("publishes scheduled messages once to scoped inboxes and resolves Central DST times", async () => {

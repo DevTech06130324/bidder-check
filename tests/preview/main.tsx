@@ -74,10 +74,10 @@ const pages: Record<string, React.ReactNode> = {
       }}
     />
   ),
-  "/earnings": <Earnings data={fixture} />,
+  "/earnings": <Earnings />,
   "/settings": <Settings data={fixture} />,
   "/notifications": <Notifications data={fixture} initialInbox={[]} initialMessages={[]} />,
-  "/interviews": <InterviewReport data={fixture} />,
+  "/interviews": <InterviewReport />,
 };
 createRoot(document.getElementById("root")!).render(
   <Providers>

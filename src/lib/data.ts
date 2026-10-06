@@ -10,9 +10,12 @@ export type WorkspaceData = {
   candidateProfiles: Row<"candidate_profiles">[];
   historicalAggregates: Row<"retained_bid_daily_aggregates">[];
   bids: Row<"bids">[];
+  bidCounts: Record<string, number>;
   invitations: Row<"invitations">[];
 };
-export async function getWorkspaceData(): Promise<WorkspaceData> {
+export async function getWorkspaceData(
+  options: { includeBidCounts?: boolean } = {},
+): Promise<WorkspaceData> {
   const { supabase, profile, workspaces } = await getContext();
   async function all<
     T extends
@@ -20,25 +23,13 @@ export async function getWorkspaceData(): Promise<WorkspaceData> {
       | "bidders"
       | "resumes"
       | "candidate_profiles"
-      | "retained_bid_daily_aggregates"
-      | "bids"
       | "invitations",
   >(table: T): Promise<Row<T>[]> {
     const result: Row<T>[] = [];
     for (let start = 0; ; start += 1000) {
       let query = supabase.from(table).select("*");
-      if (table === "retained_bid_daily_aggregates") {
-        query = query
-          .order("report_day")
-          .order("profile_id")
-          .order("bidder_id")
-          .order("resume_id")
-          .order("metric");
-      } else {
-        query = query.order(table === "bidders" ? "user_id" : "id");
-      }
+      query = query.order(table === "bidders" ? "user_id" : "id");
       query = query.range(start, start + 999);
-      if (table === "bids") query = query.is("deleted_at", null);
       const { data, error } = await query;
       if (error) throw new Error(error.message);
       result.push(...(data as unknown as Row<T>[]));
@@ -46,16 +37,19 @@ export async function getWorkspaceData(): Promise<WorkspaceData> {
     }
     return result;
   }
-  const [profiles, bidders, resumes, candidateProfiles, historicalAggregates, bids, invitations] =
+  const [profiles, bidders, resumes, candidateProfiles, bidCountsResult, invitations] =
     await Promise.all([
     all("profiles"),
     all("bidders"),
     all("resumes"),
     all("candidate_profiles"),
-    all("retained_bid_daily_aggregates"),
-    all("bids"),
+    options.includeBidCounts
+      ? supabase.rpc("resume_bid_counts")
+      : Promise.resolve({ data: {}, error: null }),
     profile.role === "bidder" ? Promise.resolve([]) : all("invitations"),
     ]);
+  if (bidCountsResult.error) throw new Error(bidCountsResult.error.message);
+  const bidCounts = (bidCountsResult.data ?? {}) as Record<string, number>;
   return {
     profile,
     workspaces,
@@ -63,8 +57,9 @@ export async function getWorkspaceData(): Promise<WorkspaceData> {
     bidders,
     resumes,
     candidateProfiles,
-    historicalAggregates,
-    bids,
+    historicalAggregates: [],
+    bids: [],
+    bidCounts,
     invitations,
   };
 }

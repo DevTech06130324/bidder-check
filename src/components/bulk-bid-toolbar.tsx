@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { LoaderCircle } from "lucide-react";
+import { formatInTimeZone } from "date-fns-tz";
 import { toast } from "sonner";
 import type {
   BidTarget,
@@ -15,9 +16,11 @@ import {
   confirmBidPurge,
   retryPurgeCleanup,
   reviewBidsAction,
+  manualApplyBidsAction,
 } from "@/app/(workspace)/actions";
 import { Button } from "./ui/button";
 import { Field } from "./common";
+import { Textarea } from "./ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -61,6 +64,10 @@ export function BulkBidToolbar({
     [snapshot, setSnapshot] = useState<PurgeSnapshot | null>(null),
     [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState("");
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualTime, setManualTime] = useState(() => formatInTimeZone(new Date(), "America/Chicago", "yyyy-MM-dd'T'HH:mm"));
+  const [manualReason, setManualReason] = useState("");
+  const [manualRequestId, setManualRequestId] = useState<string | null>(null);
   const { operations, finished, pollError, serverNow, begin, remember } =
     usePurgeOperations(manager);
   async function run(action: () => Promise<void>) {
@@ -133,6 +140,12 @@ export function BulkBidToolbar({
         >
           {trash ? "Restore selected" : "Move selected to trash"}
         </Button>
+        {manager && !trash && <Button
+          size="sm"
+          variant="outline"
+          disabled={!targets.length || disabled || busy || loading}
+          onClick={() => { setError(""); setManualOpen(true); }}
+        >Mark selected as applied</Button>}
         {manager && !trash && <>
           <Button size="sm" variant="outline" disabled={!targets.length || disabled || busy || loading} onClick={()=>void run(async()=>{const result=await reviewBidsAction(targets,"approved","");if(result.error)throw new Error(result.error);toast.success(`${result.data??targets.length} applications approved`);onDone();})}>Approve selected</Button>
           <Button size="sm" variant="outline" disabled={!targets.length || disabled || busy || loading} onClick={()=>{const reason=window.prompt("Reason for rejecting the selected applications (required)");if(!reason?.trim())return;void run(async()=>{const result=await reviewBidsAction(targets,"rejected",reason);if(result.error)throw new Error(result.error);toast.success(`${result.data??targets.length} applications returned for correction`);onDone();});}}>Reject selected</Button>
@@ -201,6 +214,43 @@ export function BulkBidToolbar({
           {purgeMessage(op, serverNow)}.
         </p>
       ))}
+      <Dialog
+        open={manualOpen}
+        onOpenChange={(open) => { if (!busy) setManualOpen(open); }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark selected bids as applied?</DialogTitle>
+            <DialogDescription>
+              This records applications without screenshots, approves the selected bids, and includes them in earnings at their configured rates.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="rounded-md bg-muted p-3 text-sm">
+              {targets.length - targets.filter((target) => target.applied).length} will be marked applied; {targets.filter((target) => target.applied).length} already applied will remain unchanged.
+            </p>
+            <Field label="Applied date and time (CT)" type="datetime-local" value={manualTime} onChange={(event) => { setManualTime(event.target.value); setManualRequestId(null); }} />
+            <label className="block space-y-1 text-xs font-medium">Reason (required)
+              <Textarea value={manualReason} maxLength={1000} onChange={(event) => { setManualReason(event.target.value); setManualRequestId(null); }} placeholder="Add context for the application record" />
+            </label>
+            <p className="text-xs text-muted-foreground">The chosen time affects activity reports and the profile’s retention period.</p>
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" disabled={busy} onClick={() => setManualOpen(false)}>Cancel</Button>
+            <Button disabled={busy || !manualTime || !manualReason.trim() || !targets.length} onClick={() => void run(async () => {
+              const requestId = manualRequestId ?? crypto.randomUUID();
+              setManualRequestId(requestId);
+              const result = await manualApplyBidsAction({ targets, localTime: manualTime, reason: manualReason, requestId });
+              if (result.error || !result.data) throw new Error(result.error ?? "Could not apply selected bids");
+              toast.success(`${result.data.applied} applications marked applied; ${result.data.unchanged} already applied`);
+              setManualRequestId(null);
+              setManualOpen(false);
+              onDone();
+            })}>Confirm application</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={!!snapshot}
         onOpenChange={(open) => {

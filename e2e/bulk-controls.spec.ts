@@ -92,3 +92,35 @@ test("cleanup notice counts down, enables retry only when due and then shows com
   await expect(notice).toContainText("Cleanup complete");
   await expect(notice).toHaveCount(0, { timeout: 15000 });
 });
+
+test("empty results keep headers and portaled filters visible", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page.getByRole("button", { name: "All dates", exact: true }).click();
+  await page.getByRole("button", { name: "Filter Company name" }).click();
+  await page.getByLabel("Company name filter").fill("no company matches this");
+  await expect(page.getByText("0–0 of 0 bids")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Company name" })).toBeVisible();
+  const filter = page.getByLabel("Company name filter");
+  await expect(filter).toBeVisible();
+  const box = await filter.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(await page.evaluate(() => innerHeight));
+  await page.getByRole("button", { name: "Clear filter" }).click();
+  await page.getByRole("textbox", { name: "Search bids" }).fill("nothing matches");
+  await expect(page.getByText("0–0 of 0 bids")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Company name" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Filter Company name" })).toBeVisible();
+});
+
+test("managers can explicitly mark selected bids applied in one confirmation", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids?manual-apply");
+  await page.getByRole("checkbox", { name: "Select bid at Linear" }).check();
+  await page.getByRole("button", { name: "Mark selected as applied" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Mark selected bids as applied?" })).toBeVisible();
+  await expect(dialog.getByLabel("Applied date and time (CT)")).toHaveValue(/.+/);
+  await dialog.getByLabel("Reason (required)").fill("Confirmed with the hiring team");
+  await dialog.getByRole("button", { name: "Confirm application" }).click();
+  await expect(page.getByText(/1 applications marked applied/)).toBeVisible();
+});

@@ -105,6 +105,7 @@ Use `.env.local` for local secrets; `.gitignore` excludes it. Keep secrets out o
 | `SUPABASE_ACCESS_TOKEN`                | Optional local deployment credential for Supabase Management API/CLI |
 | `VERCEL_TOKEN`                         | Optional local deployment credential for Vercel CLI                  |
 | `SUPABASE_DB_PASSWORD`                  | Temporary local-only CLI credential required for the production migration push; never add it to Vercel |
+| `SUPABASE_DB_URL`                       | Exact staging Session Pooler connection URL in `.env.staging`; the staging push script verifies its project ref |
 
 Management/deployment tokens are not runtime variables and must not be sent to browsers or installed in the Vercel application environment.
 

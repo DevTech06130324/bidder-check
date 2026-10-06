@@ -25,6 +25,17 @@ export const authenticate = unavailable,
   setBidInterviewAction = unavailable,
   saveSettings = unavailable,
   getFileUrl = unavailable;
+export async function manualApplyBidsAction(input: { targets: { id: string; version: number }[] }) {
+  if (!new URLSearchParams(window.location.search).has("manual-apply")) return unavailable();
+  window.dispatchEvent(new CustomEvent("manual-apply", { detail: input.targets.length }));
+  return { data: { applied: input.targets.length, unchanged: 0 } };
+}
+export async function getEarningsPerformance() {
+  return { data: {
+    totals: { count: 1, cents: 1000, resumes: 1, retainedCount: 0, trackedApplications: 1, trackedInterviews: 0, excludedInterviewCount: 0 },
+    groups: [{ id: "resume-1", label: "ENG-01", sub: "Jamie Parker", count: 1, cents: 1000, applied: 1, interviews: 0 }],
+  } };
+}
 export async function saveResumeAssignment(form: FormData) {
   if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
   window.dispatchEvent(new CustomEvent("assignment-save", { detail: String(form.get("id") ?? "") }));
@@ -53,6 +64,8 @@ export async function getBidRows(
   from: string,
   to: string,
   trash: boolean,
+  bidderId: string | undefined,
+  query: import("@/lib/bid-list").BidListQuery,
 ) {
   if (
     new URLSearchParams(window.location.search).has("refresh-failure") &&
@@ -63,13 +76,39 @@ export async function getBidRows(
   const { chicagoDateRange } = await import("@/lib/domain");
   try {
     const bounds = chicagoDateRange(mode, from, to);
+    const filtered = fixture.bids.filter((b) => {
+      const columns = Object.fromEntries(query.columnFilters.map((filter) => [filter.id, filter.value]));
+      return Boolean(b.deleted_at) === trash &&
+        (!bidderId || b.bidder_id === bidderId) &&
+        (!bounds.from || b.found_at >= bounds.from) && (!bounds.to || b.found_at < bounds.to) &&
+        (query.bidder === "all" || b.bidder_id === query.bidder) &&
+        (query.resume === "all" || b.resume_id === query.resume) &&
+        (query.source === "all" || b.source === query.source) &&
+        (query.arrangement === "all" || b.arrangement === query.arrangement) &&
+        (query.job === "all" || b.job_status === query.job) &&
+        (query.status === "all" || (query.status === "pending_review" ? b.review_status === "pending" : b.applied === (query.status === "applied"))) &&
+        `${b.company} ${b.role_name} ${b.url}`.toLowerCase().includes(query.search.toLowerCase()) &&
+        Object.entries(columns).every(([field, value]) => {
+          if (value && typeof value === "object") {
+            const date = field === "applied_at" ? b.applied_at : b.found_at;
+            if (!date) return (value as { presence?: string }).presence === "empty";
+            const day = date.slice(0, 10);
+            const range = value as { from?: string; to?: string; presence?: string };
+            return range.presence !== "empty" && (!range.from || day >= range.from) && (!range.to || day <= range.to);
+          }
+          if (!value) return true;
+          const actual = field === "applied" ? (b.applied ? "Applied" : "Unapplied") : field === "screenshot" ? (b.evidence_file_id ? "Has screenshot" : "No screenshot") : String(b[field as keyof typeof b] ?? "");
+          return actual.toLowerCase().includes(String(value).toLowerCase());
+        });
+    });
+    const sorted = [...filtered].sort((a, b) => {
+      const sort = query.sorting[0];
+      if (!sort) return b.found_at.localeCompare(a.found_at);
+      const result = String(a[sort.id as keyof typeof a] ?? "").localeCompare(String(b[sort.id as keyof typeof b] ?? ""));
+      return sort.desc ? -result : result;
+    });
     return {
-      data: fixture.bids.filter(
-        (b) =>
-          Boolean(b.deleted_at) === trash &&
-          (!bounds.from || b.found_at >= bounds.from) &&
-          (!bounds.to || b.found_at < bounds.to),
-      ),
+      data: { rows: sorted.slice(query.pageIndex * query.pageSize, (query.pageIndex + 1) * query.pageSize), total: sorted.length, sources: [...new Set(fixture.bids.map((b) => b.source).filter(Boolean))], statusCounts: { all: filtered.length, applied: filtered.filter((row)=>row.applied).length, unapplied: filtered.filter((row)=>!row.applied).length, pending_review: filtered.filter((row)=>row.review_status==="pending").length } },
     };
   } catch (e) {
     return { error: String(e) };
@@ -118,6 +157,10 @@ export async function checkBidImport(
 export async function importBids() {
   if (new URLSearchParams(location.search).has("lost-import")) return { error: "fetch failed", uncertain: true };
   return unavailable();
+}
+export async function reconcileBidTargets(targets: { id: string; version: number }[], trash: boolean) {
+  const { fixture } = await import("./sample-data");
+  return { data: targets.filter((target) => fixture.bids.some((row) => row.id === target.id && Boolean(row.deleted_at) === trash)).map((target) => target.id) };
 }
 export async function importReviewedBids(_resume: string, date: string, rows: import("@/lib/sheets").ImportRow[], sourceRows: number[]) {
   if (new URLSearchParams(location.search).has("lost-import")) return { error: "fetch failed", uncertain: true };

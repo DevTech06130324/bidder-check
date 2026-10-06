@@ -45,7 +45,7 @@ export function BidderDetail({
           <BidWorkspace data={data} bidderId={id} embedded />
         </TabsContent>
         <TabsContent value="earnings">
-          <Earnings data={data} bidderId={id} embedded />
+          <Earnings bidderId={id} embedded />
         </TabsContent>
       </Tabs>
     </>

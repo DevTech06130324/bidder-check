@@ -35,11 +35,12 @@ export function BidGrid({
   onBusy,
   onPaste,
   onOpen,
+  emptyMessage,
   checked,
   onCheck,
   disabled = false,
 }: {
-  checked: Record<string, number>;
+  checked: Record<string, { version: number; applied?: boolean }>;
   onCheck: (rows: Bid[], value: boolean) => void;
   disabled?: boolean;
   table: Table<Bid>;
@@ -48,6 +49,7 @@ export function BidGrid({
   onBusy: (busy: boolean) => void;
   onPaste: (text: string) => void;
   onOpen: (bid: Bid) => void;
+  emptyMessage: string;
 }) {
   const [selection, setSelection] = useState<{
     anchor: Point;
@@ -193,7 +195,7 @@ export function BidGrid({
   return (
     <div
       ref={container}
-      className="max-h-[70vh] overflow-auto"
+      className="max-h-[70vh] min-h-56 overflow-auto"
       tabIndex={0}
       role="region"
       aria-label="Bid table, scroll horizontally for all columns"
@@ -313,6 +315,13 @@ export function BidGrid({
           ))}
         </thead>
         <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={columns.length + 2} className="h-48 border px-6 text-center text-sm text-muted-foreground">
+                {emptyMessage}
+              </td>
+            </tr>
+          )}
           {rows.map((row, r) => (
             <tr key={row.id} className="hover:bg-muted/30">
               <td className="border px-2 py-2">
