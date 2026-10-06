@@ -1066,6 +1066,10 @@ try {
   await cp.goto(`${origin}/bids`);
   await cp.getByRole("button", { name: "All dates", exact: true }).click();
   await cp.getByLabel("Search bids").fill("Purge UI");
+  // Date and search filters are server-backed. Wait for the matching row so
+  // the page-selection checkbox cannot be clicked while the previous result
+  // set (often empty under Today) is still on screen.
+  await expect(cp.getByText("Purge UI", { exact: true })).toBeVisible();
   await cp.getByRole("checkbox", { name: "Select current page" }).check();
   await cp
     .getByRole("button", { name: "Move selected to trash", exact: true })
