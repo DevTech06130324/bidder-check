@@ -1,6 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { beforeAll, afterAll, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
+import { formatInTimeZone } from "date-fns-tz";
 
 let db: PGlite;
 const client = "00000000-0000-4000-8000-000000000001";
@@ -238,6 +239,35 @@ it("normalizes equivalent raw-RPC URLs before enforcing uniqueness", async () =>
     ).rejects.toThrow();
   }
 });
+it("validates a 476-row import against a profile with 10,000 retained bids within the statement budget", async () => {
+  await db.exec("reset role");
+  await db.query(
+    `insert into public.bids(workspace_id,bidder_id,resume_id,company,role_name,url,normalized_url,arrangement,job_status,review_status)
+     select r.workspace_id,r.bidder_id,r.id,'Seed Company '||n,'Seed Role','https://seed.example/jobs/'||n,'https://seed.example/jobs/'||n,'remote','open','approved'
+     from public.resumes r cross join generate_series(1,10000) n where r.id=$1`,
+    [resume],
+  );
+  const rows = Array.from({ length: 476 }, (_, index) => ({
+    company: `Load Company ${index + 1}`,
+    role_name: "Software Engineer",
+    url: `https://load.example/jobs/${index + 1}`,
+    source: "Test",
+    arrangement: "remote",
+    job_status: "open",
+  }));
+  await asUser(bidder);
+  const started = performance.now();
+  const result = await db.query<{ errors: unknown[] }>(
+    "select public.validate_bid_import($1,$2,$3::jsonb) errors",
+    [resume, formatInTimeZone(new Date(), "America/Chicago", "yyyy-MM-dd"), JSON.stringify(rows)],
+  );
+  const elapsed = performance.now() - started;
+  expect(result.rows[0].errors).toEqual([]);
+  // This local guard catches per-row rescans; hosted performance is checked separately.
+  expect(elapsed).toBeLessThan(8000);
+  await db.exec("reset role");
+  await db.query("delete from public.bids where resume_id=$1 and company like 'Seed Company %'", [resume]);
+});
 it("enforces profile-wide company limits and literal restrictions", async () => {
   await asUser(client);
   const profileId = (
@@ -396,6 +426,34 @@ it("verified uploads apply atomically, replace proof, reject corrected content a
       )
     ).rows[0].rate_cents,
   ).toBe(125);
+});
+it("dashboard reporting combines live CT cohorts and reports interview conversion by assignment", async () => {
+  const today = formatInTimeZone(new Date(), "America/Chicago", "yyyy-MM-dd");
+  await asUser(client);
+  await db.query(
+    "select public.set_bid_interview($1,true,clock_timestamp(),'Panel interview','')",
+    [bid],
+  );
+  const profileId = (await db.query<{ profile_id: string }>(
+    "select profile_id from public.resumes where id=$1", [resume],
+  )).rows[0].profile_id;
+  const result = (await db.query<{ report: {
+    daily: { date: string; found: number; foundApplied: number; applied: number; earningsCents: number }[];
+    totals: { found: number; foundApplied: number; trackedApplications: number; trackedInterviews: number };
+    groups: { key: string; applied: number; interviews: number; conversion: number | null }[];
+  } }>(
+    "select public.dashboard_performance($1,$1,$2,null,$3,'assignment') report",
+    [today, workspace, profileId],
+  )).rows[0].report;
+  expect(result.daily).toHaveLength(1);
+  expect(result.daily[0].date).toBe(today);
+  expect(result.daily[0].found).toBeGreaterThanOrEqual(1);
+  expect(result.totals.foundApplied).toBeGreaterThanOrEqual(1);
+  expect(result.totals.trackedApplications).toBeGreaterThanOrEqual(1);
+  expect(result.totals.trackedInterviews).toBeGreaterThanOrEqual(1);
+  expect(result.groups).toEqual(expect.arrayContaining([
+    expect.objectContaining({ key: `${profileId}:${bidder}`, applied: 1, interviews: 1, conversion: 100 }),
+  ]));
 });
 it("revokes archived bidder access but retains client history", async () => {
   await asUser(client);
@@ -1089,6 +1147,48 @@ it("commits the maximum 500-row batch once and preserves original results on ret
     ).rows[0].n,
   ).toBe(500);
 });
+
+it("imports the reviewed allowed subset while reporting fresh conflicts and preserving retry results", async () => {
+  const rid = (
+    await db.query<{ id: string }>("select id from public.resumes where identifier='SHEET-01'")
+  ).rows[0].id;
+  await asUser(client);
+  await db.query("select public.update_candidate_profile_rules($1,3,2,array['BlockedCo'],'{}','{}')", [
+    (await db.query<{ id: string }>("select profile_id id from public.resumes where id=$1", [rid])).rows[0].id,
+  ]);
+  await asUser(bidder);
+  const rows = [
+    { company: "Allowed reviewed", role_name: "Engineer", url: "https://example.com/reviewed/allowed", source: "", arrangement: "remote", job_status: "open" },
+    { company: "BlockedCo", role_name: "Engineer", url: "https://example.com/reviewed/blocked", source: "", arrangement: "remote", job_status: "open" },
+  ];
+  const request = "00000000-0000-4000-8000-000000000097";
+  const imported = (await db.query<{ r: { ids: string[]; sourceRows: number[]; skipped: { sourceRow: number; reasons: { code: string }[] }[] } }>(
+    "select public.import_bids_reviewed($1,'2025-10-01',$2::jsonb,$3::integer[],$4) r",
+    [rid, JSON.stringify(rows), [14, 19], request],
+  )).rows[0].r;
+  expect(imported.ids).toHaveLength(1);
+  expect(imported.sourceRows).toEqual([14]);
+  expect(imported.skipped).toMatchObject([{ sourceRow: 19, reasons: [{ code: "restricted_company" }] }]);
+  expect((await db.query<{ n: number }>("select count(*)::int n from public.bids where url like 'https://example.com/reviewed/%'")).rows[0].n).toBe(1);
+  expect((await db.query<{ r: unknown }>(
+    "select public.import_bids_reviewed($1,'2025-10-01',$2::jsonb,$3::integer[],$4) r",
+    [rid, JSON.stringify(rows), [14, 19], request],
+  )).rows[0].r).toEqual(imported);
+});
+
+it("keeps invalid URL errors row-local in a large validation batch", async () => {
+  await asUser(bidder);
+  const rid = (await db.query<{ id: string }>("select id from public.resumes where identifier='SHEET-01'")).rows[0].id;
+  const rows = [
+    { company: "Bad", role_name: "Engineer", url: "not a URL", source: "", arrangement: "remote", job_status: "open" },
+    ...Array.from({ length: 475 }, (_, index) => ({ company: `Good ${index}`, role_name: "Engineer", url: `https://example.com/large-validation/${index}`, source: "", arrangement: "remote", job_status: "open" })),
+  ];
+  const errors = (await db.query<{ errors: { row: number; field: string }[] }>(
+    "select public.validate_bid_import($1,'2025-10-01',$2::jsonb) errors", [rid, JSON.stringify(rows)],
+  )).rows[0].errors;
+  expect(errors).toEqual([expect.objectContaining({ row: 1, field: "url" })]);
+});
+
 it("bulk mutations are atomic and permanent deletion is manager-only, snapshot-bound and retry-safe", async () => {
   await asUser(bidder);
   const targets = (
@@ -2057,4 +2157,26 @@ it("does not deliver a queued admin alert after its device belongs to another us
   await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
   expect((await db.query("select id from public.push_attempts where subscription_id=$1", [subscription])).rows).toHaveLength(0);
   expect((await db.query("select * from public.claim_push_attempts(100)")).rows).toHaveLength(0);
+});
+
+it("returns a bounded, tenant-scoped dashboard report with a complete daily series", async () => {
+  await asUser(bidder);
+  const result = await db.query<{ report: {
+    daily: { date: string; found: number; foundApplied: number; applied: number }[];
+    totals: { found: number; foundApplied: number };
+    groups: unknown[];
+  } }>(
+    "select public.dashboard_performance('2026-01-01','2026-01-03',null,null,null,'profile') report",
+  );
+  expect(result.rows[0].report.daily.map((day) => day.date)).toEqual([
+    "2026-01-01", "2026-01-02", "2026-01-03",
+  ]);
+  expect(result.rows[0].report.totals.found).toBeGreaterThanOrEqual(0);
+  await expect(db.query(
+    "select public.dashboard_performance('2026-01-01','2026-01-03',null,$1,null,'profile')",
+    [other],
+  )).rejects.toThrow("Access denied");
+  await expect(db.query(
+    "select public.dashboard_performance('2025-01-01','2026-01-03',null,null,null,'profile')",
+  )).rejects.toThrow("Choose a reporting range");
 });

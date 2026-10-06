@@ -219,7 +219,10 @@ export function BidGrid({
         e.preventDefault();
       }}
       onPaste={(e) => {
-        if (edit || e.defaultPrevented || !selection) return;
+        if (
+          edit || e.defaultPrevented || !selection ||
+          (e.target as HTMLElement).closest("[data-grid-interactive]")
+        ) return;
         const text = e.clipboardData.getData("text/plain");
         if (text.includes("\t") || text.includes("\n")) {
           e.preventDefault();
@@ -373,6 +376,10 @@ export function BidGrid({
                       }
                     }}
                     onPointerDown={(e) => {
+                      if ((e.target as HTMLElement).closest("button,a,input,select,textarea,[data-grid-interactive]")) {
+                        dragging.current = false;
+                        return;
+                      }
                       if (edit) return;
                       dragging.current = true;
                       select(point, e.shiftKey);

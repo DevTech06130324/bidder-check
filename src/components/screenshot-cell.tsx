@@ -11,7 +11,9 @@ import {
   DialogTitle,
   DialogDescription,
 } from "./ui/dialog";
-import { FileUpload } from "./file-upload";
+import { FileUpload, uploadVerifiedFile } from "./file-upload";
+import { pastedImage } from "@/lib/clipboard-image";
+import { LoaderCircle } from "lucide-react";
 
 export function ScreenshotCell({
   bid,
@@ -29,6 +31,9 @@ export function ScreenshotCell({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [open, setOpen] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [pasteProgress, setPasteProgress] = useState("");
+  const [pasteError, setPasteError] = useState("");
+  const [pasteBusy, setPasteBusy] = useState(false);
   const router = useRouter();
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) =>
@@ -58,8 +63,51 @@ export function ScreenshotCell({
       clearInterval(timer);
     };
   }, [visible, bid.evidence_file_id, retry]);
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      const target = ref.current;
+      const clipboard = event.clipboardData;
+      if (!target || !clipboard || !target.contains(document.activeElement)) return;
+      const includesImage = Array.from(clipboard.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) || Array.from(clipboard.files).some((file) => file.type.startsWith("image/"));
+      if (!includesImage) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (disabled || pasteBusy || bid.deleted_at || bid.review_status !== "approved") {
+        setPasteError(bid.deleted_at ? "Restore this bid before uploading evidence." : bid.review_status !== "approved" ? "Client approval is required before screenshot upload." : "Screenshot upload is busy. Try again when it finishes.");
+        return;
+      }
+      const image = pastedImage(clipboard.items, clipboard.files);
+      if (!image) {
+        setPasteError("Clipboard image type is unsupported. Use PNG, JPEG, or WebP.");
+        return;
+      }
+      setPasteBusy(true);
+      setPasteError("");
+      void uploadVerifiedFile("screenshot", bid.id, image, (phase, progress) => {
+        setPasteProgress(`${phase} ${progress}%`);
+      }).then(() => {
+        router.refresh();
+      }).catch((reason: unknown) => {
+        setPasteError(reason instanceof Error ? reason.message : "Screenshot upload failed. Paste the image again to retry.");
+      }).finally(() => {
+        setPasteBusy(false);
+        setPasteProgress("");
+      });
+    };
+    window.addEventListener("paste", handlePaste, true);
+    return () => window.removeEventListener("paste", handlePaste, true);
+  }, [bid.id, bid.deleted_at, bid.review_status, disabled, pasteBusy, router]);
   return (
-    <div ref={ref} className="w-40 space-y-1 whitespace-normal">
+    <div
+      ref={ref}
+      tabIndex={0}
+      data-grid-interactive
+      aria-label={`Screenshot paste target for ${bid.company}. Focus and press Ctrl+V or Command+V.`}
+      className="w-40 space-y-1 whitespace-normal rounded-sm focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2"
+    >
+      {pasteBusy && <span className="inline-flex items-center gap-1 text-[10px] text-primary" role="status"><LoaderCircle size={12} className="animate-spin" />{pasteProgress || "Uploading screenshot"}</span>}
+      {pasteError && <p className="text-[10px] leading-4 text-destructive" role="alert">{pasteError}</p>}
+      {!uploadOpen && !bid.deleted_at && bid.review_status === "approved" && <p className="text-[9px] leading-3 text-muted-foreground">Focus this cell and paste an image</p>}
       {url && (
         <button
           className="block w-full overflow-hidden rounded-md border focus-visible:outline-2 focus-visible:outline-primary"

@@ -13,7 +13,8 @@ import {
   type ImportRow,
   type ImportError,
 } from "@/lib/sheets";
-import { checkBidImport, importBids } from "@/app/(workspace)/actions";
+import { checkBidImport, importReviewedBids } from "@/app/(workspace)/actions";
+import { classifyImportRows, type SkippedImportRow } from "@/lib/import-workflow";
 import {
   Dialog,
   DialogContent,
@@ -26,7 +27,7 @@ import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { Field, SelectField } from "./common";
 import { toast } from "sonner";
-export type ImportResult = { date: string; bidder: string; resume: string };
+export type ImportResult = { date: string; bidder: string; resume: string; importedCount: number; skipped: SkippedImportRow[] };
 export function SheetsImport({
   data,
   initialText,
@@ -66,7 +67,7 @@ export function SheetsImport({
     [busy, setBusy] = useState(false),
     [checking, setChecking] = useState(false);
   const request = useRef(crypto.randomUUID());
-  const frozen = useRef<{ resume: string; date: string; rows: ImportRow[]; sourceRows: number[]; requestId: string } | null>(null);
+  const frozen = useRef<{ resume: string; date: string; rows: ImportRow[]; sourceRows: number[]; requestId: string; skipped: SkippedImportRow[] } | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const localErrors = useMemo(
@@ -157,6 +158,8 @@ export function SheetsImport({
   async function submit() {
     if (!rows || busy) return;
     let payload = frozen.current;
+    const reviewedSourceRows = displayed?.allowedSourceRows ?? [];
+    let preSkipped: SkippedImportRow[] = [];
     let importSent = false;
     setAttempted(true);
     setBusy(true);
@@ -168,45 +171,49 @@ export function SheetsImport({
         const checked = await checkBidImport(resume, date, rows);
         if (checked.error) throw new Error(checked.error);
         const freshErrors = (checked.data ?? []).map((entry) => ({ ...entry, row: sourceRows[entry.row - 1] ?? entry.row }));
-        const signature = (issues: ImportError[]) => issues.map((entry) => `${entry.row}:${entry.field}:${entry.code}:${entry.message}`).sort().join("|");
-        if (signature(freshErrors) !== signature(serverErrors)) {
-          setServerErrors(freshErrors);
-          setError("Profile restrictions changed. Review the updated row results, then click import again.");
-          return;
-        }
-        const blockedRows = new Set([...localErrors, ...freshErrors].map((entry) => entry.row));
-        const allowedIndexes = rows.map((_, index) => index).filter((index) => !blockedRows.has(sourceRows[index] ?? index + 1));
+        const fresh = classifyImportRows(rows, sourceRows, [...localErrors, ...freshErrors]);
+        preSkipped = fresh.skipped;
+        const selected = new Set(reviewedSourceRows);
+        const allowedIndexes = rows.map((_, index) => index).filter((index) => {
+          const rowNumber = sourceRows[index] ?? index + 1;
+          return selected.has(rowNumber) && !fresh.skipped.some((entry) => entry.sourceRow === rowNumber);
+        });
         const allowed = allowedIndexes.map((index) => rows[index]);
         if (!allowed.length) {
-          setError("No rows are allowed. Fix or remove blocked rows, then try again.");
+          setServerErrors(freshErrors);
+          setError("No rows are allowed to import after rechecking. Review the updated reasons and correct or remove blocked rows.");
           return;
         }
-        payload = { resume, date, rows: allowed, sourceRows: allowedIndexes.map((index) => sourceRows[index] ?? index + 1), requestId: request.current };
+        payload = { resume, date, rows: allowed, sourceRows: allowedIndexes.map((index) => sourceRows[index] ?? index + 1), requestId: request.current, skipped: preSkipped };
       }
+      if (payload.skipped.length) preSkipped = payload.skipped;
       importSent = true;
-      const result = await importBids(payload.resume, payload.date, payload.rows, payload.requestId);
+      const result = await importReviewedBids(payload.resume, payload.date, payload.rows, payload.sourceRows, payload.requestId);
       if (result.error) {
         frozen.current = result.uncertain ? payload : null;
         setUncertain(!!result.uncertain);
         setError(result.uncertain ? "Connection interrupted. Retry keeps the same request and will not duplicate bids." : result.error);
       }
-      else if (result.data?.errors) {
+      else if (result.data?.ids) {
+        const backendSkipped = (result.data.skipped ?? []) as unknown as { sourceRow: number; reasons: ImportError[] }[];
+        if (!result.data.ids.length) {
+          setServerErrors(backendSkipped.flatMap((entry) => entry.reasons));
+          setError("No rows are allowed to import after rechecking. Review the updated reasons and correct or remove blocked rows.");
+          setAttempted(false);
+          return;
+        }
         frozen.current = null;
         setUncertain(false);
-        setServerErrors(result.data.errors.map((entry) => ({
-          ...entry, row: payload!.sourceRows[entry.row - 1] ?? entry.row,
-        })));
-        setError("The latest validation changed. Review the updated results and click import again.");
-        setAttempted(false);
-      } else if (result.data?.ids) {
-        frozen.current = null;
-        setUncertain(false);
-        toast.success(
-          result.data.purgedCount
-            ? `Original import completed; ${result.data.purgedCount} bids were subsequently deleted. No bids recreated.`
-            : `${result.data.ids.length} bids imported`,
-        );
-        onSuccess(result.data);
+        const skippedByRow = new Map(preSkipped.map((entry) => [entry.sourceRow, entry]));
+        backendSkipped.flatMap((entry) => {
+          const index = payload!.sourceRows.indexOf(entry.sourceRow);
+          return index < 0 ? [] : [[entry.sourceRow, { sourceRow: entry.sourceRow, row: payload!.rows[index], reasons: entry.reasons }] as const];
+        }).forEach(([sourceRow, entry]) => skippedByRow.set(sourceRow, entry));
+        const skipped = [
+          ...skippedByRow.values(),
+        ].sort((a, b) => a.sourceRow - b.sourceRow);
+        toast.success(`${result.data.ids.length} ${result.data.ids.length === 1 ? "bid" : "bids"} imported${skipped.length ? `; ${skipped.length} ${skipped.length === 1 ? "row" : "rows"} skipped` : ""}`);
+        onSuccess({ ...result.data, importedCount: result.data.ids.length, skipped });
       }
     } catch (e) {
       if (importSent && payload) {
@@ -224,6 +231,7 @@ export function SheetsImport({
     ...localErrors.filter((entry) => !serverIssueFields.has(`${entry.row}:${entry.field}`)),
     ...serverErrors,
   ];
+  const displayed = rows ? classifyImportRows(rows, sourceRows, errors) : null;
   return (
     <Dialog
       open
@@ -472,7 +480,7 @@ export function SheetsImport({
                 disabled={busy}
                 onClick={submit}
               >
-                {busy ? "Validating and importing..." : uncertain ? "Retry same import" : `Import ${rows.filter((_, i) => !errors.some((entry) => entry.row === (sourceRows[i] ?? i + 1))).length} allowed bids`}
+                {busy ? "Validating and importing..." : uncertain ? "Retry same import" : `Import ${displayed?.allowed.length ?? 0} allowed bids`}
               </Button>
               {error && (
                 <Button

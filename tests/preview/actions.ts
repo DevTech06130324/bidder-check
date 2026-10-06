@@ -31,11 +31,18 @@ export async function saveResumeAssignment(form: FormData) {
   return { data: String(form.get("id") || crypto.randomUUID()) };
 }
 export async function prepareUpload(_kind: string, target: string) {
-  if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
-  return { data: { id: target, storage_path: "fixture/resume.pdf" } };
+  if (new URLSearchParams(location.search).has("assignment-upload"))
+    return { data: { id: target, storage_path: "fixture/resume.pdf" } };
+  if (new URLSearchParams(location.search).has("paste-screenshot")) {
+    document.documentElement.dataset.screenshotPrepared = target;
+    window.dispatchEvent(new CustomEvent("screenshot-prepare", { detail: target }));
+    return { data: { id: "fixture-screenshot-upload", storage_path: "fixture/screenshot.png" } };
+  }
+  return unavailable();
 }
 export async function finalizeUpload(id: string) {
-  if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
+  if (!new URLSearchParams(location.search).has("assignment-upload") && !new URLSearchParams(location.search).has("paste-screenshot")) return unavailable();
+  if (new URLSearchParams(location.search).has("paste-screenshot")) document.documentElement.dataset.screenshotFinalized = id;
   return { data: id };
 }
 export const getBidHistory = async () => ({ data: [] });
@@ -90,6 +97,11 @@ export async function checkBidImport(
   _date: string,
   rows: import("@/lib/sheets").ImportRow[],
 ) {
+  if (new URLSearchParams(window.location.search).has("fresh-conflict")) {
+    const count = Number(sessionStorage.getItem("fresh-import-validation") ?? "0") + 1;
+    sessionStorage.setItem("fresh-import-validation", String(count));
+    if (count >= 2) return { data: [{ row: 2, field: "url", code: "duplicate_url", message: "This profile already has an application for this job." }] };
+  }
   if (new URLSearchParams(window.location.search).has("block-import")) {
     return {
       data: rows.map((_, index) => ({
@@ -106,6 +118,30 @@ export async function checkBidImport(
 export async function importBids() {
   if (new URLSearchParams(location.search).has("lost-import")) return { error: "fetch failed", uncertain: true };
   return unavailable();
+}
+export async function importReviewedBids(_resume: string, date: string, rows: import("@/lib/sheets").ImportRow[], sourceRows: number[]) {
+  if (new URLSearchParams(location.search).has("lost-import")) return { error: "fetch failed", uncertain: true };
+  document.documentElement.dataset.lastImportCount = String(rows.length);
+  return { data: { ids: rows.map(() => crypto.randomUUID()), sourceRows, skipped: [], date, bidder: "bidder-0", resume: "resume-0" } };
+}
+
+export async function getDashboardPerformance({ from, to }: { from: string; to: string }) {
+  const { fixture } = await import("./sample-data");
+  const days: { date: string; found: number; foundApplied: number; applied: number; earningsCents: number; earningsCount: number }[] = [];
+  for (let date = from; date <= to; ) {
+    days.push({ date, found: 0, foundApplied: 0, applied: 0, earningsCents: 0, earningsCount: 0 });
+    const next = new Date(`${date}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    date = next.toISOString().slice(0, 10);
+  }
+  if (days.length) Object.assign(days[days.length - 1], { found: fixture.bids.length, foundApplied: fixture.bids.filter((row) => row.applied).length, applied: fixture.bids.filter((row) => row.applied).length, earningsCents: 1000, earningsCount: 1 });
+  return { data: {
+    daily: days,
+    totals: { found: fixture.bids.length, foundApplied: fixture.bids.filter((row) => row.applied).length, appliedActivity: fixture.bids.filter((row) => row.applied).length, earningsCents: 1000, earningsCount: 1, trackedApplications: 1, trackedInterviews: 0 },
+    review: { pending: fixture.bids.filter((row) => row.review_status === "pending").length, approved_unapplied: 0, rejected: 0 },
+    sources: [{ label: "LinkedIn", value: fixture.bids.length }],
+    groups: [{ key: "profile-0", label: "ENG-01", applied: 1, interviews: 0, conversion: 0 }],
+  } };
 }
 
 export async function trashBid(id: string, deleted: boolean) {

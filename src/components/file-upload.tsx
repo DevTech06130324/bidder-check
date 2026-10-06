@@ -1,10 +1,11 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UploadCloud, LoaderCircle, ImagePlus } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/client";
 import { prepareUpload, finalizeUpload } from "@/app/(workspace)/actions";
 import { validateUpload, uploadTypes } from "@/lib/domain";
+import { pastedImage } from "@/lib/clipboard-image";
 import { Button } from "./ui/button";
 export async function uploadVerifiedFile(
   kind: "resume" | "screenshot",
@@ -61,11 +62,13 @@ export function FileUpload({
   onBusy?: (value: boolean) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
+  const surface = useRef<HTMLDivElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [phase, setPhase] = useState("");
   const [error, setError] = useState("");
   const retryFile = useRef<File | null>(null);
   const busy = useRef(false);
+  useEffect(() => { surface.current?.focus({ preventScroll: true }); }, []);
   async function upload(file: File) {
     if (busy.current || disabled) return;
     busy.current = true;
@@ -92,6 +95,7 @@ export function FileUpload({
   }
   return (
     <div
+      ref={surface}
       tabIndex={0}
       aria-label={
         kind === "screenshot"
@@ -99,16 +103,24 @@ export function FileUpload({
           : "Upload resume file"
       }
       className={`relative rounded-xl border border-dashed border-primary/30 bg-primary/[.025] text-center focus-visible:outline-2 focus-visible:outline-primary ${compact ? "w-52 whitespace-normal p-2" : "p-6"}`}
+      data-grid-interactive
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
         if (e.dataTransfer.files[0]) void upload(e.dataTransfer.files[0]);
       }}
-      onPaste={(e) => {
-        if (kind === "screenshot" && e.clipboardData.files[0]) {
+      onPasteCapture={(e) => {
+        if (kind !== "screenshot") return;
+        const image = pastedImage(e.clipboardData.items, e.clipboardData.files);
+        if (!image) {
           e.preventDefault();
-          void upload(e.clipboardData.files[0]);
+          e.stopPropagation();
+          setError("No supported image was found in the clipboard.");
+          return;
         }
+        e.preventDefault();
+        e.stopPropagation();
+        void upload(image);
       }}
     >
       <input

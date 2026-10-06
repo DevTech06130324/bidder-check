@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createClient } from "@supabase/supabase-js";
+import { formatInTimeZone } from "date-fns-tz";
 import { chromium, expect as baseExpect } from "@playwright/test";
 const expect = baseExpect.configure({ timeout: 45000 });
 
@@ -85,6 +86,14 @@ function pass(message) {
 function ok(result) {
   if (result.error) throw new Error(result.error.message);
   return result.data;
+}
+async function allRows(makeQuery, pageSize = 1000) {
+  const rows = [];
+  for (let start = 0; ; start += pageSize) {
+    const page = ok(await makeQuery().range(start, start + pageSize - 1));
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
 }
 async function assertStorageMissing(path) {
   const { data, error } = await admin.storage.from("private-files").download(path);
@@ -945,6 +954,7 @@ try {
     }),
   ]);
   assert.equal(mixedEdits.filter((result) => !result.error).length, 2);
+
   const payload = {
     p_resume: resume.id,
     p_date: "2026-11-01",
@@ -1196,6 +1206,61 @@ try {
   pass(
     "Empty trash ignores date/search filters within the client workspace; bidders cannot purge",
   );
+
+  // Benchmark last among the bid-table UI flows so the 10,000-row synthetic
+  // cohort does not make unrelated interactive table checks load that dataset.
+  const seedRows = Array.from({ length: 10_000 }, (_, index) => {
+    const number = index + 1;
+    const jobUrl = `https://benchmark-${prefix}.example/jobs/${number}`;
+    return {
+      workspace_id: workspaces[0],
+      bidder_id: invited.id,
+      resume_id: resume.id,
+      company: `Benchmark ${prefix} ${number}`,
+      role_name: "Software Engineer",
+      url: jobUrl,
+      normalized_url: jobUrl,
+      source: "Benchmark",
+      arrangement: "remote",
+      job_status: "open",
+      found_at: "2025-01-01T12:00:00.000Z",
+      review_status: "approved",
+      review_revision: 1,
+      reviewed_by: owner.id,
+      reviewed_at: new Date().toISOString(),
+    };
+  });
+  for (let start = 0; start < seedRows.length; start += 1000)
+    ok(await admin.from("bids").insert(seedRows.slice(start, start + 1000)));
+  const addedDate = formatInTimeZone(new Date(), "America/Chicago", "yyyy-MM-dd");
+  const benchmarkBatch = async (count) => {
+    const rows = Array.from({ length: count }, (_, index) => ({
+      company: `New Batch ${count} Company ${index + 1}`,
+      role_name: "Software Engineer",
+      url: `https://batch-${count}-${prefix}.example/jobs/${index + 1}`,
+      source: "Benchmark",
+      arrangement: "remote",
+      job_status: "open",
+    }));
+    const sourceRows = Array.from({ length: count }, (_, index) => index + 1);
+    const started = performance.now();
+    const result = ok(await bidder.rpc("import_bids_reviewed", {
+      p_resume: resume.id,
+      p_date: addedDate,
+      p_rows: rows,
+      p_source_rows: sourceRows,
+      p_request: randomUUID(),
+    }));
+    const elapsedMs = Math.round(performance.now() - started);
+    assert.equal(result.ids.length, count);
+    assert.equal(result.skipped.length, 0);
+    assert.ok(elapsedMs < 4000, `${count}-row import exceeded the 4-second performance target (${elapsedMs}ms)`);
+    console.log(`BENCHMARK ${count}-row transactional import against 10,000 retained applications: ${elapsedMs}ms`);
+  };
+  await benchmarkBatch(476);
+  await benchmarkBatch(500);
+  pass("Hosted import performance: 476- and 500-row atomic batches succeed against 10,000 retained applications");
+
   ok(
     await client.rpc("update_bidder", {
       p_bidder: invited.id,
@@ -1415,11 +1480,12 @@ try {
       if (!workspaces.includes(workspace.id)) workspaces.push(workspace.id);
   }
   if (workspaces.length) {
-    const files = ok(
-      await admin
+    const files = await allRows(
+      () => admin
         .from("files")
         .select("storage_path")
-        .in("workspace_id", workspaces),
+        .in("workspace_id", workspaces)
+        .order("id"),
     );
     if (files.length)
       ok(
@@ -1427,18 +1493,20 @@ try {
           .from("private-files")
           .remove(files.map((f) => f.storage_path)),
       );
-    const bids = ok(
-      await admin.from("bids").select("id").in("workspace_id", workspaces),
+    const bids = await allRows(
+      () => admin
+        .from("bids")
+        .select("id")
+        .in("workspace_id", workspaces)
+        .order("id"),
     );
-    if (bids.length)
+    const bidIds = bids.map((bid) => bid.id);
+    for (let start = 0; start < bidIds.length; start += 200)
       ok(
         await admin
           .from("bid_events")
           .delete()
-          .in(
-            "bid_id",
-            bids.map((b) => b.id),
-          ),
+          .in("bid_id", bidIds.slice(start, start + 200)),
       );
     ok(
       await admin

@@ -37,6 +37,7 @@ candidate_retention_preview: { Args: { p_profile: string | null; p_months: numbe
 claim_push_attempts: { Args: { p_limit: number | null }; Returns: string };
 claim_storage_cleanup: { Args: { p_operation: string | null; p_limit: number | null }; Returns: Database["public"]["Tables"]["storage_cleanup_tasks"]["Row"][] };
 confirm_bid_purge: { Args: { p_operation: string | null }; Returns: unknown };
+dashboard_performance: { Args: { p_from: string | null; p_to: string | null; p_workspace: string | null; p_bidder: string | null; p_profile: string | null; p_group: string | null }; Returns: unknown };
 delete_all_push_subscriptions: { Args: Record<string, never>; Returns: undefined };
 delete_push_subscription: { Args: { p_endpoint: string | null }; Returns: undefined };
 finalize_verified_file: { Args: { p_id: string | null; p_sha: string | null; p_actor: string | null }; Returns: undefined };
@@ -44,6 +45,7 @@ finish_push_attempt: { Args: { p_attempt: string | null; p_lease: string | null;
 finish_storage_cleanup: { Args: { p_task: string | null; p_lease: string | null; p_success: boolean | null }; Returns: undefined };
 has_due_storage_cleanup: { Args: Record<string, never>; Returns: boolean };
 import_bids: { Args: { p_resume: string | null; p_date: string | null; p_rows: unknown | null; p_request: string | null }; Returns: unknown };
+import_bids_reviewed: { Args: { p_resume: string | null; p_date: string | null; p_rows: unknown | null; p_source_rows: number[] | null; p_request: string | null }; Returns: unknown };
 invite_bidder: { Args: { p_workspace: string | null; p_email: string | null; p_name: string | null; p_rate: number | null }; Returns: string };
 is_admin: { Args: Record<string, never>; Returns: boolean };
 manages: { Args: { w: string | null }; Returns: boolean };

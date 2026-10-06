@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { readFile } from "node:fs/promises";
 test("dashboard has real component layout, responsive navigation, and no serious accessibility issues", async ({
   page,
 }, testInfo) => {
@@ -7,10 +8,11 @@ test("dashboard has real component layout, responsive navigation, and no serious
   await expect(
     page.getByRole("heading", { name: "Welcome back, Alex." }),
   ).toBeVisible();
-  await expect(page.getByText("Total earnings", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Today (CT)", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Earned", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Daily application activity" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Daily earnings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review workload" })).toBeVisible();
+  await expect(page.getByText(/CT$/).first()).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -117,6 +119,13 @@ test("daily table has ordered workflow columns, automatic timestamps and trash c
   await page.getByRole("button", { name: "Add bid", exact: true }).click();
   await expect(page.getByLabel(/Found time/)).toHaveCount(0);
 });
+test("dashboard review link opens the all-dates pending review queue", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids?review=pending");
+  await expect(page.getByRole("button", { name: /Pending review/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "All dates", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("gridcell", { name: "pending Approve Reject" }).first()).toBeVisible();
+  expect(await page.getByRole("row").count()).toBeGreaterThan(2);
+});
 
 test("column controls filter across current results and page size is customizable", async ({ page }) => {
   await page.goto("http://127.0.0.1:3001/bids");
@@ -205,6 +214,83 @@ test("Sheets mapping keeps blocked rows visible and allows valid rows to import"
   await expect(
     page.getByRole("button", { name: "Import 1 allowed bids", exact: true }),
   ).toBeEnabled();
+});
+test("imports allowed Sheets rows while skipping invalid URLs and offers a skipped-row report", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids");
+  await page.getByRole("button", { name: "Paste from Sheets", exact: true }).click();
+  await page.getByLabel("Import bidder", { exact: true }).selectOption("bidder-0");
+  await page.getByLabel("Import resume", { exact: true }).selectOption("resume-0");
+  await page.getByLabel("Copied Google Sheets cells").fill("Acme\tEngineer\thttps://example.com/allowed\nTokyo\tDesigner\tbad-url");
+  await page.getByRole("button", { name: "Read columns" }).click();
+  await page.getByRole("button", { name: "Preview bids" }).click();
+  await expect(page.getByRole("button", { name: "Import 1 allowed bids", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Import 1 allowed bids", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Paste new bids from Sheets" })).toHaveCount(0);
+  await expect(page.getByText("1 bid imported; 1 row skipped.", { exact: false })).toBeVisible();
+  const downloadReady = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download skipped rows" }).click();
+  const download = await downloadReady;
+  const path = await download.path();
+  expect(path).toBeTruthy();
+  const csv = await readFile(path!, "utf8");
+  expect(csv).toContain('"2"');
+  expect(csv).toContain('"Tokyo"');
+  expect(csv).toContain("valid HTTP/HTTPS URL");
+});
+test("fresh import conflicts skip only the newly blocked row and include it in the report", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/bids?fresh-conflict");
+  await page.getByRole("button", { name: "Paste from Sheets", exact: true }).click();
+  await page.getByLabel("Import bidder", { exact: true }).selectOption("bidder-0");
+  await page.getByLabel("Import resume", { exact: true }).selectOption("resume-0");
+  await page.getByLabel("Copied Google Sheets cells").fill("Acme\tEngineer\thttps://example.com/one\nTokyo\tDesigner\thttps://example.com/two");
+  await page.getByRole("button", { name: "Read columns" }).click();
+  await page.getByRole("button", { name: "Preview bids" }).click();
+  await expect(page.getByText("Allowed", { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "Import 2 allowed bids", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-last-import-count", "1");
+  await expect(page.getByText("1 bid imported; 1 row skipped.", { exact: false })).toBeVisible();
+  const downloadReady = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download skipped rows" }).click();
+  const download = await downloadReady;
+  const csv = await readFile((await download.path())!, "utf8");
+  expect(csv).toContain('"2"');
+  expect(csv).toContain('"Tokyo"');
+  expect(csv).toContain("already has an application");
+});
+test("pasting an image into the selected screenshot cell uploads only to that bid", async ({ page }) => {
+  let uploadRequests = 0;
+  await page.route("**/storage/v1/object/private-files/**", (route) => { uploadRequests += 1; return route.fulfill({ status: 200, body: "stored" }); });
+  await page.goto("http://127.0.0.1:3001/bids?paste-screenshot");
+  await page.getByRole("button", { name: "All dates", exact: true }).click();
+  const target = page.locator('[data-grid-r="1"][data-field="screenshot"] [aria-label^="Screenshot paste target"]');
+  await expect(target).toBeVisible();
+  const clipboard = await target.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([137, 80, 78, 71])], "pasted.png", { type: "image/png" }));
+    const item = transfer.items[0];
+    element.focus();
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, clipboardData: transfer }));
+    return { kind: item?.kind, type: item?.type, fileCount: transfer.files.length };
+  });
+  expect(clipboard).toEqual({ kind: "file", type: "image/png", fileCount: 1 });
+  await expect(page.locator("html")).toHaveAttribute("data-screenshot-prepared", "bid-1");
+  await expect.poll(() => uploadRequests).toBe(1);
+  await expect(page.locator("html")).toHaveAttribute("data-screenshot-finalized", "fixture-screenshot-upload");
+  await expect(page.getByRole("heading", { name: "Paste new bids from Sheets" })).toHaveCount(0);
+});
+test("screenshot paste is visibly blocked while a bid is waiting for client review", async ({ page }) => {
+  let uploadRequests = 0;
+  await page.route("**/storage/v1/object/private-files/**", (route) => { uploadRequests += 1; return route.fulfill({ status: 200, body: "stored" }); });
+  await page.goto("http://127.0.0.1:3001/bids?paste-screenshot");
+  const target = page.locator('[data-grid-r="0"][data-field="screenshot"] [aria-label^="Screenshot paste target"]');
+  await target.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([137, 80, 78, 71])], "pasted.png", { type: "image/png" }));
+    element.focus();
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, clipboardData: transfer }));
+  });
+  await expect(page.getByRole("alert")).toContainText("Client approval is required");
+  expect(uploadRequests).toBe(0);
 });
 test("a lost import response freezes the reviewed batch for retry", async ({ page }) => {
   await page.goto("http://127.0.0.1:3001/bids?lost-import");

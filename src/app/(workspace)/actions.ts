@@ -659,7 +659,7 @@ export async function checkBidImport(
     return (await rpc("validate_bid_import", {
       p_resume: z.uuid().parse(resume),
       p_date: date,
-      p_rows: rows.map((row) => ({ ...row, url: normalizeJobUrl(row.url) })),
+      p_rows: rows,
     })) as import("@/lib/sheets").ImportError[];
   }, false);
 }
@@ -676,7 +676,7 @@ export async function importBids(
     const args = {
       p_resume: z.uuid().parse(resume),
       p_date: date,
-      p_rows: rows.map((row) => ({ ...row, url: normalizeJobUrl(row.url) })),
+      p_rows: rows,
       p_request: z.uuid().parse(request),
     };
     const { supabase } = await getContext();
@@ -697,6 +697,54 @@ export async function importBids(
       bidder: string;
       resume: string;
     }, uncertain: false };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not complete import.", uncertain: sent };
+  }
+}
+
+export async function importReviewedBids(
+  resume: string,
+  date: string,
+  rows: import("@/lib/sheets").ImportRow[],
+  sourceRows: number[],
+  request: string,
+): Promise<{
+  data?: {
+    ids: string[];
+    sourceRows: number[];
+    skipped: unknown;
+    date: string;
+    bidder: string;
+    resume: string;
+  };
+  error?: string;
+  uncertain?: boolean;
+}> {
+  let sent = false;
+  try {
+    if (rows.length !== sourceRows.length || rows.length > 500)
+      throw new Error("Import row mapping is invalid");
+    if (Buffer.byteLength(JSON.stringify(rows)) > 2 * 1024 * 1024)
+      throw new Error("Import payload is too large");
+    const args = {
+      p_resume: z.uuid().parse(resume),
+      p_date: date,
+      p_rows: rows,
+      p_source_rows: sourceRows.map((row) => z.number().int().positive().parse(row)),
+      p_request: z.uuid().parse(request),
+    };
+    const { supabase } = await getContext();
+    sent = true;
+    const { data, error } = await supabase.rpc("import_bids_reviewed", args);
+    if (error) {
+      if (error.code === "57014")
+        return { error: "The database import timed out. No bids were committed; retry this batch. If the timeout repeats, split it into smaller batches." };
+      const definite = /^(?:[0-9A-Z]{5}|PGRST\d{3})$/.test(error.code ?? "");
+      return { error: error.message, uncertain: !definite };
+    }
+    if (!data) return { error: "The import response was incomplete. Retry the same request.", uncertain: true };
+    revalidatePath("/", "layout");
+    return { data: data as unknown as NonNullable<Awaited<ReturnType<typeof importReviewedBids>>["data"]> };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not complete import.", uncertain: sent };
   }
@@ -775,4 +823,33 @@ export async function recentBidPurges() {
     async () => (await rpc("recent_bid_purges", {})) as PurgeStatus[],
     false,
   );
+}
+
+export type DashboardReport = {
+  daily: { date: string; found: number; foundApplied: number; applied: number; earningsCents: number; earningsCount: number }[];
+  totals: { found: number; foundApplied: number; appliedActivity: number; earningsCents: number; earningsCount: number; trackedApplications: number; trackedInterviews: number };
+  review: { pending: number; approved_unapplied: number; rejected: number };
+  sources: { label: string; value: number }[];
+  groups: { key: string; label: string; applied: number; interviews: number; conversion: number | null }[];
+};
+export async function getDashboardPerformance(input: {
+  from: string;
+  to: string;
+  workspace?: string;
+  bidder?: string;
+  profile?: string;
+  group?: "profile" | "bidder" | "assignment";
+}) {
+  return perform(async () => {
+    const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    const result = await rpc("dashboard_performance", {
+      p_from: date.parse(input.from),
+      p_to: date.parse(input.to),
+      p_workspace: input.workspace ? z.uuid().parse(input.workspace) : null,
+      p_bidder: input.bidder ? z.uuid().parse(input.bidder) : null,
+      p_profile: input.profile ? z.uuid().parse(input.profile) : null,
+      p_group: z.enum(["profile", "bidder", "assignment"]).parse(input.group ?? "profile"),
+    });
+    return result as unknown as DashboardReport;
+  }, false);
 }

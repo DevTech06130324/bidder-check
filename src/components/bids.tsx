@@ -71,6 +71,7 @@ import { FileUpload } from "./file-upload";
 import { BulkBidToolbar } from "./bulk-bid-toolbar";
 import { BidGrid } from "./bid-grid";
 import { SheetsImport, type ImportResult } from "./sheets-import";
+import { skippedRowsCsv } from "@/lib/import-workflow";
 type Bid = Row<"bids">;
 export function BidDialog({ data, bid }: { data: WorkspaceData; bid?: Bid }) {
   const [open, setOpen] = useState(false);
@@ -246,6 +247,7 @@ export function BidWorkspace({
   const [uploadBusy, setUploadBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [paste, setPaste] = useState<string | null>(null);
+  const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const editing = useRef(false);
   const deferredRefresh = useRef(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -260,6 +262,7 @@ export function BidWorkspace({
     }
   }
   function imported(result: ImportResult) {
+    setLastImport(result);
     setPaste(null);
     setSearch("");
     setStatus("all");
@@ -312,6 +315,13 @@ export function BidWorkspace({
   const [loadError, setLoadError] = useState("");
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("review") === "pending") {
+      setStatus("pending_review");
+      setDateMode("all");
+      setTrash(false);
+    }
+  }, []);
   useEffect(() => {
     const update = () => {
       if (editing.current) {
@@ -734,6 +744,20 @@ export function BidWorkspace({
           onSuccess={imported}
         />
       )}
+        {lastImport && lastImport.skipped.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm" role="status">
+            <span>{lastImport.importedCount} {lastImport.importedCount === 1 ? "bid" : "bids"} imported; {lastImport.skipped.length} {lastImport.skipped.length === 1 ? "row" : "rows"} skipped.</span>
+          <Button variant="outline" size="sm" onClick={() => {
+            const url = URL.createObjectURL(new Blob([skippedRowsCsv(lastImport.skipped)], { type: "text/csv;charset=utf-8" }));
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `bid-import-skipped-${lastImport.date}.csv`;
+            anchor.click();
+            URL.revokeObjectURL(url);
+          }}>Download skipped rows</Button>
+          <Button variant="ghost" size="sm" onClick={() => setLastImport(null)}>Dismiss</Button>
+        </div>
+      )}
       {!embedded && (
         <PageHeading
           eyebrow="EVERY OPPORTUNITY, ACCOUNTED FOR"
@@ -755,6 +779,7 @@ export function BidWorkspace({
                   key={s}
                   variant={status === s ? "secondary" : "ghost"}
                   size="sm"
+                  aria-pressed={status === s}
                   onClick={() => { setStatus(s); if (s === "pending_review") setDateMode("all"); }}
                   className="text-xs capitalize"
                 >
