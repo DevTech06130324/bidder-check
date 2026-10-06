@@ -164,12 +164,15 @@ async function readBid(id) {
 }
 async function openBid(page) {
   await page.goto(`${origin}/bids`);
-  await page
-    .getByRole("button", {
-      name: "View Engineer at Smoke Company",
-      exact: true,
-    })
-    .click();
+  await expect(
+    page.getByRole("status", { name: "Bids up to date" }),
+  ).toBeVisible({ timeout: 45000 });
+  const viewButton = page.getByRole("button", {
+    name: "View Engineer at Smoke Company",
+    exact: true,
+  });
+  await expect(viewButton).toBeVisible({ timeout: 45000 });
+  await viewButton.click();
 }
 async function uploadProof(page, buffer, success = true) {
   await page
@@ -1078,10 +1081,12 @@ try {
     cp.getByText("Selected bids moved to trash", { exact: true }),
   ).toBeVisible();
   await cp.getByRole("button", { name: "Trash", exact: true }).click();
+  await expect(cp.getByRole("status", { name: "Bids up to date" })).toBeVisible();
+  await expect(cp.getByText("Purge UI", { exact: true })).toBeVisible();
   await cp.getByRole("checkbox", { name: "Select current page" }).check();
-  await cp
-    .getByRole("button", { name: "Delete selected permanently", exact: true })
-    .click();
+  const prepareButton = cp.getByRole("button", { name: "Delete selected permanently", exact: true });
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
   await expect(
     cp.getByRole("heading", { name: "Permanently delete 1 bids?" }),
   ).toBeVisible();
