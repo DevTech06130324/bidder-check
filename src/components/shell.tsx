@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import {
@@ -28,7 +28,7 @@ import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./ui/sheet";
 import { signOut } from "@/app/auth/actions";
-import { getInboxNotifications } from "@/app/(workspace)/actions";
+import { getUnreadNotificationCount } from "@/app/(workspace)/actions";
 import { initials } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 import type { Row } from "@/lib/database.types";
@@ -54,22 +54,17 @@ export function Shell({
   unreadCount?: number;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mobile, setMobile] = useState(false);
   const [unread, setUnread] = useState(unreadCount);
   const { resolvedTheme, setTheme } = useTheme();
   useEffect(() => {
-    const refresh = () => router.refresh();
-    window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
-  }, [router]);
-  useEffect(() => {
     if (profile.role === "client") return;
     const update = async () => {
-      const result = await getInboxNotifications();
-      if (!result.error) setUnread((result.data ?? []).filter((row) => !row.read_at && !row.resolved_at).length);
+      const result = await getUnreadNotificationCount();
+      if (!result.error) setUnread(result.data ?? 0);
     };
+    void update();
     const timer = window.setInterval(() => void update(), 30000);
     window.addEventListener("focus", update);
     return () => { window.clearInterval(timer); window.removeEventListener("focus", update); };

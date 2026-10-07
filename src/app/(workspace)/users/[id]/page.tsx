@@ -7,7 +7,7 @@ export default async function Page({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const data = await getWorkspaceData();
+  const data = await getWorkspaceData({ scope: "bidder-detail", bidderId: id, includeBidCounts: true });
   if (
     data.profile.role === "bidder" ||
     !data.bidders.some((b) => b.user_id === id)

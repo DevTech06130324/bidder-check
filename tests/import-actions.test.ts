@@ -14,10 +14,11 @@ it("preserves uncertain import outcomes when the RPC response is lost", async ()
   rpc.mockResolvedValue({ data: null, error: { code: "", message: "TypeError: fetch failed" } });
   expect(await importBids(resume, "2026-10-05", rows, request)).toMatchObject({ uncertain: true });
 });
-it("preserves uncertain import outcomes when revalidation fails after commit", async () => {
+it("returns committed import results without refreshing the entire workspace", async () => {
   rpc.mockResolvedValue({ data: { ids: [resume] }, error: null });
   revalidate.mockImplementation(() => { throw new Error("revalidation interrupted"); });
-  expect(await importBids(resume, "2026-10-05", rows, request)).toMatchObject({ uncertain: true });
+  expect(await importBids(resume, "2026-10-05", rows, request)).toMatchObject({ data: { ids: [resume] } });
+  expect(revalidate).not.toHaveBeenCalled();
 });
 it("allows editing after a definite database rejection", async () => {
   rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "Assignment unavailable" } });

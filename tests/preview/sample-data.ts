@@ -104,7 +104,7 @@ export const fixture: WorkspaceData = {
   resumes,
   candidateProfiles,
   historicalAggregates: [],
-  bidCounts: {},
+  bidCounts: { "resume-0": 2 },
   invitations: [],
   bids: companies.map((company, i) => ({
     id: `bid-${i}`,

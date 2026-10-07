@@ -36,10 +36,11 @@ export async function getEarningsPerformance() {
     groups: [{ id: "resume-1", label: "ENG-01", sub: "Jamie Parker", count: 1, cents: 1000, applied: 1, interviews: 0 }],
   } };
 }
-export async function saveResumeAssignment(form: FormData) {
+export async function getUnreadNotificationCount() { return { data: 0 }; }
+export async function saveResumeAssignment(input: { id?: string; profileId: string; bidderId: string; email: string; phone: string; rate: string }) {
   if (!new URLSearchParams(location.search).has("assignment-upload")) return unavailable();
-  window.dispatchEvent(new CustomEvent("assignment-save", { detail: String(form.get("id") ?? "") }));
-  return { data: String(form.get("id") || crypto.randomUUID()) };
+  window.dispatchEvent(new CustomEvent("assignment-save", { detail: input }));
+  return { data: input.id || crypto.randomUUID() };
 }
 export async function prepareUpload(_kind: string, target: string) {
   if (new URLSearchParams(location.search).has("assignment-upload"))

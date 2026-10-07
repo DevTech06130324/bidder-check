@@ -721,66 +721,118 @@ it("only admins approve or reject clients and rejection needs a reason", async (
   );
 });
 
-it("bid trash is reversible, serializes with proof, and retains duplicate protection", async () => {
-  await asUser("00000000-0000-4000-8000-000000000005");
-  await db.query("select public.update_client($1,'Client',false)", [client]);
-  await asUser(client);
-  await db.query("select public.update_bidder($1,'Jordan',125,false)", [
-    bidder,
-  ]);
-  await asUser(bidder);
-  const before = (
-    await db.query<{ applied: boolean; rate_cents: number; found_at: string }>(
-      "select * from public.bids where id=$1",
-      [bid],
-    )
-  ).rows[0];
-  const pendingFile = (
-    await db.query<{ id: string }>(
-      "select public.prepare_file('screenshot',$1,'proof.png','image/png',100) id",
-      [bid],
-    )
-  ).rows[0].id;
-  await db.query("select public.trash_bid($1,true)", [bid]);
-  await db.exec("reset role; set role service_role");
-  await expect(
-    db.query("select public.finalize_verified_file($1,$2,$3)", [
-      pendingFile,
-      "e".repeat(64),
-      bidder,
-    ]),
-  ).rejects.toThrow("trash");
-  await asUser(other);
-  await expect(
-    db.query("select public.trash_bid($1,false)", [bid]),
-  ).rejects.toThrow("Access denied");
-  await asUser(bidder);
-  await expect(
-    db.query(
-      "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/jobs?id=1','Indeed','remote','open')",
-      [resume],
-    ),
-  ).rejects.toThrow("restore");
-  await db.query("select public.trash_bid($1,false)", [bid]);
-  await db.query("select public.trash_bid($1,false)", [bid]);
-  const restored = (
-    await db.query<typeof before & { deleted_at: null }>(
-      "select * from public.bids where id=$1",
-      [bid],
-    )
-  ).rows[0];
-  expect(restored.deleted_at).toBeNull();
-  expect(restored.rate_cents).toBe(before.rate_cents);
-  expect(restored.applied).toBe(before.applied);
-  expect(restored.found_at).toEqual(before.found_at);
-  expect(
-    (
-      await db.query(
-        "select * from public.bid_events where bid_id=$1 and event='restored'",
-        [bid],
+it("active bids reserve duplicates while Trash releases them and conflicts block restoration", async () => {
+  let testProfile: string | undefined;
+  let testResume: string | undefined;
+  let firstBid: string | undefined;
+  let replacement: string | undefined;
+  let resumeFile: string | undefined;
+  try {
+    await asUser("00000000-0000-4000-8000-000000000005");
+    await db.query("select public.update_client($1,'Client',false)", [client]);
+    await asUser(client);
+    await db.query("select public.update_bidder($1,'Jordan',125,false)", [bidder]);
+    testProfile = (
+      await db.query<{ id: string }>(
+        "select public.save_candidate_profile(null,$1,'ACTIVE-ONLY','Jordan','','','') id",
+        [workspace],
       )
-    ).rows,
-  ).toHaveLength(1);
+    ).rows[0].id;
+    await db.query(
+      "select public.update_candidate_profile_rules($1,1,3,'{}','{}','{}',null)",
+      [testProfile],
+    );
+    testResume = (
+      await db.query<{ id: string }>(
+        "select public.save_resume_assignment(null,$1,$2,'active-only@test.com','555-1111',null,null) id",
+        [testProfile, bidder],
+      )
+    ).rows[0].id;
+    resumeFile = await finalizeResumeFile(testResume);
+    await asUser(bidder);
+    firstBid = (
+      await db.query<{ id: string }>(
+        "select public.save_bid(null,$1,'Acme','Engineer','https://example.com/active-only?id=1','Indeed','remote','open') id",
+        [testResume],
+      )
+    ).rows[0].id;
+
+    await expect(
+      db.query(
+        "select public.save_bid(null,$1,' ACME  ',' Engineer ','https://example.com/active-only?id=3','Indeed','remote','open')",
+        [testResume],
+      ),
+    ).rejects.toThrow(/already has an application/i);
+
+    // Active company capacity is enforced, then released immediately by Trash.
+    await expect(
+      db.query(
+        "select public.save_bid(null,$1,'ACME','Engineer II','https://example.com/active-only?id=2','Indeed','remote','open')",
+        [testResume],
+      ),
+    ).rejects.toThrow(/company limit/i);
+    await db.query("select public.trash_bid($1,true)", [firstBid]);
+    replacement = (
+      await db.query<{ id: string }>(
+        "select public.save_bid(null,$1,'ACME','Engineer','https://example.com/active-only?id=1','Indeed','remote','open') id",
+        [testResume],
+      )
+    ).rows[0].id;
+
+    const trashedVersion = (
+      await db.query<{ version: number }>(
+        "select version from public.bids where id=$1",
+        [firstBid],
+      )
+    ).rows[0].version;
+    await expect(
+      db.query("select public.bulk_bid_state($1::jsonb,false)", [
+        JSON.stringify([{ id: firstBid, version: trashedVersion }]),
+      ]),
+    ).rejects.toThrow("Restoration blocked");
+    expect(
+      (
+        await db.query<{ deleted_at: string | null }>("select deleted_at from public.bids where id=$1", [firstBid])
+      ).rows[0].deleted_at,
+    ).not.toBeNull();
+    await db.query("select public.trash_bid($1,true)", [replacement]);
+    const versions = (
+      await db.query<{ id: string; version: number }>(
+        "select id,version from public.bids where id=any($1::uuid[]) order by id",
+        [[firstBid, replacement]],
+      )
+    ).rows;
+    await expect(
+      db.query("select public.bulk_bid_state($1::jsonb,false)", [JSON.stringify(versions)]),
+    ).rejects.toThrow("Restoration blocked");
+    expect(
+      (
+        await db.query<{ count: string }>(
+          "select count(*)::text count from public.bids where id=any($1::uuid[]) and deleted_at is not null",
+          [[firstBid, replacement]],
+        )
+      ).rows[0].count,
+    ).toBe("2");
+    const firstVersion = versions.find((row) => row.id === firstBid)!.version;
+    await db.query("select public.bulk_bid_state($1::jsonb,false)", [
+      JSON.stringify([{ id: firstBid, version: firstVersion }]),
+    ]);
+  } finally {
+    await db.exec("reset role; set role service_role");
+    if (testProfile) {
+      await db.query("delete from public.bid_events where bid_id=any($1::uuid[])", [
+        [firstBid, replacement].filter(Boolean),
+      ]);
+      await db.query("delete from public.bids where id=any($1::uuid[])", [
+        [firstBid, replacement].filter(Boolean),
+      ]);
+      await db.query("update public.resumes set file_id=null where id=$1", [testResume]);
+      await db.query("delete from public.files where resume_id=$1", [testResume]);
+      await db.query("delete from public.resumes where id=$1", [testResume]);
+      await db.query("delete from public.candidate_profiles where id=$1", [testProfile]);
+    }
+    void resumeFile;
+  }
 });
 it("found time cannot be supplied or changed through APIs", async () => {
   await asUser(bidder);
@@ -987,17 +1039,14 @@ it("imports atomically with receipts and version-checks individual cells", async
   await asUser(bidder);
   await db.query("select public.trash_bid($1,true)", [first.ids[0]]);
   const duplicate = await run(
-    [rows[0], { ...rows[0], url: "https://example.com/sheet/2" }],
+    [rows[0]],
     "00000000-0000-4000-8000-000000000098",
   );
-  expect(JSON.stringify(duplicate.errors)).toMatch(/restore/i);
+  expect(duplicate.errors).toBeUndefined();
+  expect(duplicate.ids).toHaveLength(1);
   expect(
-    (
-      await db.query(
-        "select id from public.bids where url='https://example.com/sheet/2'",
-      )
-    ).rows,
-  ).toHaveLength(0);
+    (await db.query("select id from public.bids where normalized_url='https://example.com/sheet/1' and deleted_at is null")).rows,
+  ).toHaveLength(1);
   await expect(edit(stale.row.version)).rejects.toThrow(/trash/);
   const invalid = await run(
     [{ ...rows[0], url: "javascript:alert(1)" }],
@@ -1111,7 +1160,7 @@ it("canonicalizes raw Unicode/spaces and rejects invalid HTTP authorities in dat
       ],
     )
   ).rows[0].e;
-  expect(errors[0].message).toMatch(/restore/);
+  expect(errors).toEqual([]);
 });
 it("commits the maximum 500-row batch once and preserves original results on retry", async () => {
   await asUser(bidder);
@@ -1711,6 +1760,18 @@ it("shares candidate profile details but keeps each bidder assignment private", 
       [firstAssignment, profile, bidder, unrelatedPdf],
     ),
   ).rejects.toThrow(/PDF|verified/i);
+  await db.query(
+    "select public.save_resume_assignment($1,$2,$3,'other-owner@test.com','555-0104',null,null)",
+    [unrelatedAssignment, unrelatedProfile, peer],
+  );
+  const moved = (
+    await db.query<{ bidder_id: string; file_id: string | null }>(
+      "select bidder_id,file_id from public.resumes where id=$1",
+      [unrelatedAssignment],
+    )
+  ).rows[0];
+  expect(moved.bidder_id).toBe(peer);
+  expect(moved.file_id).toBeNull();
 
   await asUser(bidder);
   await db.query(
@@ -2226,6 +2287,7 @@ it("creates admin signup alerts only for public pending clients and defaults new
 
 it("does not deliver a queued admin alert after its device belongs to another user", async () => {
   await asUser(other);
+  console.log("trash-other");
   const subscription = (await db.query<{ id: string }>(
     "select public.save_push_subscription('https://push.example.test/device','key','auth') id",
   )).rows[0].id;
@@ -2236,6 +2298,7 @@ it("does not deliver a queued admin alert after its device belongs to another us
   const queued = (await db.query("select id from public.push_attempts where subscription_id=$1", [subscription])).rows;
   expect(queued).toHaveLength(1);
   await asUser(bidder);
+  console.log("trash-bidder");
   await db.query("select public.save_push_subscription('https://push.example.test/device','new-key','new-auth')");
   await db.exec("reset role; set role service_role; select set_config('request.jwt.claim.role','service_role',false)");
   expect((await db.query("select id from public.push_attempts where subscription_id=$1", [subscription])).rows).toHaveLength(0);

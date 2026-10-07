@@ -30,6 +30,7 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
   const membership = data.bidders.find((b) => b.user_id === bidder);
   const selectedProfile = data.candidateProfiles.find((p) => p.id === profileId);
   const hasBidHistory = !!resume && (data.bidCounts[resume.id] ?? 0) > 0;
+  const needsNewPdf = !resume?.file_id || resume.bidder_id !== bidder;
   const profiles = data.candidateProfiles.filter((p) => !p.archived && (!membership || p.workspace_id === membership.workspace_id));
   return <Dialog open={open} onOpenChange={(next) => { if (pending || uploading) return; setOpen(next); if (!next) { setSavedAssignment(""); setFile(null); setUploadError(""); } }}>
     <DialogTrigger asChild><Button variant={resume ? "outline" : "default"} size={resume ? "sm" : "default"} disabled={pending || uploading || !data.bidders.some((b) => !b.archived) || !data.candidateProfiles.some((p) => !p.archived)}>{!resume && <Plus size={16} />} {resume ? "Edit assignment" : "Assign profile"}</Button></DialogTrigger>
@@ -40,13 +41,20 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
         const form = new FormData(event.currentTarget);
         start(async () => {
         setUploadError("");
-        if (!resume?.file_id && !file) { setUploadError("Choose a PDF resume file before assigning this profile."); return; }
+        if (needsNewPdf && !file) { setUploadError("Choose a PDF resume file for this bidder before saving the assignment."); return; }
         if (file) {
           try { validateUpload("resume", file.type, file.size); }
           catch (error) { setUploadError(error instanceof Error ? error.message : "Choose a valid PDF."); return; }
         }
-        const result = await saveResumeAssignment(form);
-        if (result.error || !result.data) { toast.error(result.error ?? "Could not save assignment."); return; }
+        const result = await saveResumeAssignment({
+          id: savedAssignment || resume?.id || undefined,
+          profileId,
+          bidderId: bidder,
+          email: String(form.get("email") ?? ""),
+          phone: String(form.get("phone") ?? ""),
+          rate: String(form.get("rate") ?? ""),
+        });
+        if (result.error || !result.data) { const message = result.error ?? "Could not save assignment."; setUploadError(message); toast.error(message); return; }
         const id = result.data as string;
         setSavedAssignment(id);
         if (file) {
@@ -81,6 +89,8 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
           <option value="" disabled>Choose a shared profile</option>
           {profiles.map((p) => <option key={p.id} value={p.id}>{p.identifier} · {p.candidate_name}</option>)}
         </SelectField>
+        {hasBidHistory && <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">Profile and bidder are locked because this assignment has bid history, including applications in Trash. Contact details, rate, and PDF can still be updated.</p>}
+        {resume && resume.bidder_id !== bidder && <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">Changing the assigned bidder clears the previous bidder’s PDF. Upload a PDF for the new bidder to complete this assignment.</p>}
         {selectedProfile && <p className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">Shared profile: {selectedProfile.candidate_name}. Address, links, and instructions are managed on the Profiles page.</p>}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Email address" name="email" type="email" required defaultValue={resume?.email} />
@@ -88,15 +98,15 @@ export function ResumeDialog({ data, resume, bidderId }: { data: WorkspaceData; 
         </div>
         <Field label="Rate override per bid (USD)" name="rate" type="number" min="0" step="0.01" defaultValue={resume?.rate_override_cents != null ? resume.rate_override_cents / 100 : ""} placeholder={membership?.default_rate_cents != null ? `Inherit ${usd(membership.default_rate_cents)}` : "Use bidder default"} />
         <div className="space-y-2 rounded-xl border border-dashed p-4">
-          <label className="block text-sm font-medium" htmlFor="assignment-resume-file">Resume PDF {resume?.file_id && <span className="text-xs font-normal text-muted-foreground">(optional replacement)</span>}</label>
-          <input ref={fileInput} id="assignment-resume-file" type="file" accept="application/pdf" required={!resume?.file_id} disabled={pending || uploading} aria-label="Choose resume file" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadError(""); }} className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-xs file:font-medium" />
+          <label className="block text-sm font-medium" htmlFor="assignment-resume-file">Resume PDF {!needsNewPdf && <span className="text-xs font-normal text-muted-foreground">(optional replacement)</span>}</label>
+          <input ref={fileInput} id="assignment-resume-file" type="file" accept="application/pdf" required={needsNewPdf} disabled={pending || uploading} aria-label="Choose resume file" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadError(""); }} className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-xs file:font-medium" />
           {file && <div className="flex items-center justify-between text-xs text-muted-foreground"><span className="truncate">{file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB</span><Button type="button" variant="ghost" size="sm" disabled={pending || uploading} onClick={() => { setFile(null); if (fileInput.current) fileInput.current.value = ""; setUploadError(""); }}>Remove</Button></div>}
-          {!file && resume?.file_id && <p className="text-xs text-muted-foreground">Current PDF stays active if a replacement upload fails.</p>}
+          {!file && resume?.file_id && !needsNewPdf && <p className="text-xs text-muted-foreground">Current PDF stays active if a replacement upload fails.</p>}
           <p className="text-xs text-muted-foreground">PDF only, up to 10 MB. The assignment becomes available for bids after verification.</p>
           {uploadProgress && <div role="status" className="text-xs">{uploadProgress.phase}… {uploadProgress.value}%</div>}
           {uploadError && <p role="alert" className="text-xs text-destructive">{uploadError}</p>}
         </div>
-        <div className="flex justify-end"><SaveButton pending={pending || uploading} label={file ? "Assign profile and upload PDF" : "Save assignment"} /></div>
+        <div className="flex justify-end"><SaveButton pending={pending || uploading} label={file ? "Assign profile and upload PDF" : needsNewPdf ? "Choose a PDF to continue" : "Save assignment"} /></div>
       </form>
     </DialogContent>
   </Dialog>;

@@ -1,7 +1,6 @@
 "use server";
 import { getContext } from "@/lib/auth";
 import { adminClient } from "@/lib/admin";
-import { revalidatePath } from "next/cache";
 import {
   normalizeJobUrl,
   moneyToCents,
@@ -25,13 +24,17 @@ import type {
 import { canRetryPurge } from "@/lib/purge-status";
 
 type Result<T = undefined> = { data?: T; error?: string };
+export type BidRestoreIssue = { bidId: string; field: string; code: string; message: string };
 async function perform<T>(
   fn: () => Promise<T>,
   mutate = true,
 ): Promise<Result<T>> {
   try {
     const data = await fn();
-    if (mutate) revalidatePath("/", "layout");
+    // Authenticated routes are dynamic. Their caller refreshes only the
+    // affected view; invalidating the workspace root also reruns its auth,
+    // unread-count, and page-data waterfalls for unrelated screens.
+    void mutate;
     return { data };
   } catch (e) {
     const message =
@@ -51,7 +54,7 @@ async function rpc<N extends keyof Database["public"]["Functions"]>(
 ) {
   const { supabase } = await getContext();
   const { data, error } = await supabase.rpc(name, args);
-  if (error) throw new Error(error.message);
+  if (error) throw Object.assign(new Error(error.message), { details: error.details });
   return data;
 }
 const text = (form: FormData, key: string) =>
@@ -195,6 +198,17 @@ export async function getInboxNotifications() {
     return data;
   }, false);
 }
+export async function getUnreadNotificationCount() {
+  return perform(async () => {
+    const { supabase, profile } = await getContext();
+    if (profile.role === "client") return 0;
+    let query = supabase.from("inbox_notifications").select("id", { count: "exact", head: true }).is("read_at", null).is("resolved_at", null);
+    query = profile.role === "admin" ? query.eq("kind", "client_signup") : query.eq("kind", "message");
+    const { count, error } = await query;
+    if (error) throw new Error(error.message);
+    return count ?? 0;
+  }, false);
+}
 export async function getClientMessages() {
   return perform(async () => {
     const { supabase, profile } = await getContext();
@@ -275,15 +289,35 @@ export async function saveCandidateProfileRules(input: {
     }),
   );
 }
-export async function saveResumeAssignment(form: FormData) {
+export async function saveResumeAssignment(input: {
+  id?: string;
+  profileId: string;
+  bidderId: string;
+  email: string;
+  phone: string;
+  rate: string;
+}) {
   return perform(async () => {
-    const rate = moneyToCents(text(form, "rate"));
+    const validated = z.object({
+      id: z.uuid({ error: "Choose an assignment to update." }).optional(),
+      profileId: z.uuid({ error: "Choose a candidate profile." }),
+      bidderId: z.uuid({ error: "Choose a bidder." }),
+      email: z.email({ error: "Enter a valid email address." }),
+      phone: z.string().trim().min(1, "Enter a phone number.").max(100, "Phone number must be 100 characters or fewer."),
+      rate: z.string(),
+    }).safeParse({ ...input, email: input.email.trim() });
+    if (!validated.success) {
+      const issue = validated.error.issues[0];
+      const label = ({ id: "Assignment", profileId: "Candidate profile", bidderId: "Bidder", email: "Email", phone: "Phone" } as Record<string, string>)[String(issue.path[0])] ?? "Assignment";
+      throw new Error(`${label}: ${issue.message}`);
+    }
+    const rate = moneyToCents(validated.data.rate);
     const assignment = await rpc("save_resume_assignment", {
-      p_id: id(text(form, "id")),
-      p_profile: z.uuid().parse(text(form, "profile_id")),
-      p_bidder: z.uuid().parse(text(form, "bidder_id")),
-      p_email: z.email().parse(text(form, "email")),
-      p_phone: z.string().min(1).max(100).parse(text(form, "phone")),
+      p_id: validated.data.id ?? null,
+      p_profile: validated.data.profileId,
+      p_bidder: validated.data.bidderId,
+      p_email: validated.data.email,
+      p_phone: validated.data.phone,
       p_file: null,
       p_rate: rate,
     });
@@ -421,10 +455,35 @@ export async function createClientAccount(form: FormData) {
     });
   });
 }
-export async function trashBid(bid: string, deleted: boolean) {
-  return perform(async () =>
-    rpc("trash_bid", { p_bid: z.uuid().parse(bid), p_deleted: deleted }),
-  );
+export async function trashBid(bid: string, deleted: boolean): Promise<{ data?: undefined; error?: string; issues?: BidRestoreIssue[] }> {
+  try {
+    await rpc("trash_bid", { p_bid: z.uuid().parse(bid), p_deleted: deleted });
+    return { data: undefined };
+  } catch (error) {
+    const issues = restorationIssues(error, bid);
+    return { error: issues?.map((issue) => issue.message).join(" ") ?? (error instanceof Error ? error.message : "Could not update this bid."), ...(issues ? { issues } : {}) };
+  }
+}
+
+function restorationIssues(error: unknown, fallbackId: string): BidRestoreIssue[] | undefined {
+  const details = (error as { details?: unknown } | null)?.details;
+  if (typeof details !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(details) as {
+      bidId?: string;
+      issues?: Array<{ field?: string; code?: string; message?: string }>;
+      restorationIssues?: Array<{ bidId?: string; issues?: Array<{ field?: string; code?: string; message?: string }> }>;
+    };
+    const blocked = parsed.restorationIssues ?? [{ bidId: parsed.bidId, issues: parsed.issues }];
+    return blocked.flatMap((record) => (record.issues ?? []).flatMap((issue) => issue.message ? [{
+      bidId: record.bidId ?? fallbackId,
+      field: issue.field ?? "application",
+      code: issue.code ?? "restore_blocked",
+      message: issue.message,
+    }] : []));
+  } catch {
+    return undefined;
+  }
 }
 export async function createBidder(form: FormData) {
   return perform(async () => {
@@ -693,7 +752,6 @@ export async function importBids(
       return { error: error.message, uncertain: !definite };
     }
     if (!data) return { error: "The import response was incomplete. Retry the same request.", uncertain: true };
-    revalidatePath("/", "layout");
     return { data: data as {
       ids?: string[];
       purgedCount?: number;
@@ -779,7 +837,6 @@ export async function importReviewedBids(
       return { error: error.message, uncertain: !definite };
     }
     if (!data) return { error: "The import response was incomplete. Retry the same request.", uncertain: true };
-    revalidatePath("/", "layout");
     return { data: data as unknown as NonNullable<Awaited<ReturnType<typeof importReviewedBids>>["data"]> };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not complete import.", uncertain: sent };
@@ -790,13 +847,21 @@ const bidTargets = z
   .array(z.object({ id: z.uuid(), version: z.number().int().nonnegative() }))
   .min(1)
   .max(500);
-export async function bulkBidState(targets: BidTarget[], deleted: boolean) {
-  return perform(async () =>
-    rpc("bulk_bid_state", {
+export async function bulkBidState(targets: BidTarget[], deleted: boolean): Promise<{ data?: number; error?: string; issues?: BidRestoreIssue[] }> {
+  try {
+    const count = await rpc("bulk_bid_state", {
       p_targets: bidTargets.parse(targets),
       p_deleted: z.boolean().parse(deleted),
-    }),
-  );
+    });
+    return { data: count as number };
+  } catch (error) {
+    const fallbackId = targets[0]?.id ?? "";
+    const issues = !deleted ? restorationIssues(error, fallbackId) : undefined;
+    return {
+      error: issues?.map((issue) => issue.message).join(" ") ?? (error instanceof Error ? error.message : "Could not update selected bids."),
+      ...(issues ? { issues } : {}),
+    };
+  }
 }
 export async function prepareBidPurge(
   mode: "selected" | "all",

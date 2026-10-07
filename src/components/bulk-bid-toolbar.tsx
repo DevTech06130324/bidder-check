@@ -128,7 +128,10 @@ export function BulkBidToolbar({
           onClick={() =>
             void run(async () => {
               const result = await bulkBidState(targets, !trash);
-              if (result.error) throw new Error(result.error);
+              if (result.error) {
+                const restoreReasons = result.issues?.map((issue) => `Application ${issue.bidId.slice(0, 8)}: ${issue.message}`).join(" ");
+                throw new Error(restoreReasons ?? result.error);
+              }
               toast.success(
                 trash
                   ? "Selected bids restored"

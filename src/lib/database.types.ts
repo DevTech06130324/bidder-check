@@ -70,6 +70,7 @@ reserve_client_account: { Args: { p_email: string | null; p_name: string | null 
 reset_application_library: { Args: { p_workspaces: string[] | null; p_expected_fingerprint: string | null; p_actor: string | null }; Returns: unknown };
 resubmit_bid: { Args: { p_bid: string | null; p_version: number | null }; Returns: unknown };
 resume_bid_counts: { Args: Record<string, never>; Returns: unknown };
+resume_bid_counts_for_bidder: { Args: { p_bidder: string | null }; Returns: unknown };
 retained_aggregate_summary: { Args: { p_from: string | null; p_to: string | null }; Returns: unknown };
 retention_cleanup_status: { Args: Record<string, never>; Returns: unknown };
 retry_bid_cleanup: { Args: { p_operation: string | null }; Returns: unknown };

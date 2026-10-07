@@ -28,7 +28,10 @@ if (
     "Set SUPABASE_DB_URL to the exact staging Session Pooler URL, or provide the staging direct-connection password.",
   );
 connection.searchParams.set("sslmode", "require");
-const args = ["--dns-resolver", "https", "db", "push", "--db-url", connection.toString(), "--skip-vault", "--yes"];
+const dnsResolver = process.env.SUPABASE_DNS_RESOLVER ?? "https";
+if (!["https", "native"].includes(dnsResolver))
+  throw new Error("SUPABASE_DNS_RESOLVER must be https or native.");
+const args = ["--dns-resolver", dnsResolver, "db", "push", "--db-url", connection.toString(), "--skip-vault", "--yes"];
 if (process.argv.includes("--dry-run")) args.push("--dry-run");
 
 const cli = fileURLToPath(

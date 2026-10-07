@@ -36,6 +36,53 @@ test("assignment success clears the saved ID and removal clears the native picke
   expect(await picker.evaluate((input: HTMLInputElement) => input.files?.length)).toBe(0);
 });
 
+test("editing an assignment with bid history keeps its locked IDs in the save payload", async ({ page }) => {
+  await page.goto("http://127.0.0.1:3001/resumes?assignment-upload");
+  await page.getByRole("button", { name: /Jamie Parker/ }).click();
+  const details = page.getByRole("dialog");
+  await details.getByRole("button", { name: "Edit assignment" }).click();
+  const editor = page.getByRole("dialog").last();
+  await expect(editor.getByText(/locked because this assignment has bid history/i)).toBeVisible();
+  await expect(editor.getByLabel("Assigned bidder")).toBeDisabled();
+  await expect(editor.getByLabel("Candidate profile")).toBeDisabled();
+  await editor.getByLabel("Email address").fill("updated@example.test");
+  await page.evaluate(() => {
+    document.body.dataset.assignmentPayload = "";
+    window.addEventListener("assignment-save", (event) => {
+      document.body.dataset.assignmentPayload = JSON.stringify((event as CustomEvent).detail);
+    }, { once: true });
+  });
+  await editor.getByRole("button", { name: "Save assignment" }).click();
+  await expect.poll(() => page.locator("body").getAttribute("data-assignment-payload")).toContain('"profileId":"profile-bidder-0"');
+  await expect(page.locator("body")).toHaveAttribute("data-assignment-payload", /"bidderId":"bidder-0"/);
+  await expect(page.locator("body")).toHaveAttribute("data-assignment-payload", /"email":"updated@example.test"/);
+});
+
+test("changing an assignment bidder requires a PDF for the new owner", async ({ page }) => {
+  await page.route("https://upload.example.test/**", route => route.fulfill({ status: 200, body: "{}" }));
+  await page.goto("http://127.0.0.1:3001/resumes?assignment-upload");
+  await page.getByRole("button", { name: /Taylor Reed/ }).click();
+  const details = page.getByRole("dialog");
+  await details.getByRole("button", { name: "Edit assignment" }).click();
+  const editor = page.getByRole("dialog").last();
+  await editor.getByLabel("Assigned bidder").selectOption("bidder-2");
+  await editor.getByLabel("Candidate profile").selectOption("profile-bidder-2");
+  await expect(editor.getByText(/clears the previous bidder’s PDF/i)).toBeVisible();
+  await expect(editor.getByLabel("Choose resume file")).toHaveAttribute("required", "");
+  await editor.getByLabel("Email address").fill("new-owner@example.test");
+  await editor.getByLabel("Phone number").fill("555-0199");
+  await editor.getByLabel("Choose resume file").setInputFiles({ name: "new-owner.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF fixture") });
+  await page.evaluate(() => {
+    document.body.dataset.assignmentPayload = "";
+    window.addEventListener("assignment-save", (event) => {
+      document.body.dataset.assignmentPayload = JSON.stringify((event as CustomEvent).detail);
+    }, { once: true });
+  });
+  await editor.getByRole("button", { name: "Assign profile and upload PDF" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await expect(page.locator("body")).toHaveAttribute("data-assignment-payload", /"bidderId":"bidder-2"/);
+});
+
 test("invalid resume files are rejected before creating an assignment", async ({ page }) => {
   await page.goto("http://127.0.0.1:3001/resumes?assignment-upload");
   await page.evaluate(() => { document.body.dataset.saves = "0"; window.addEventListener("assignment-save", () => { document.body.dataset.saves = String(Number(document.body.dataset.saves) + 1); }); });
