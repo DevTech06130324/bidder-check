@@ -21,3 +21,11 @@ export type BidListResult = {
   sources: string[];
   statusCounts: Record<string, number>;
 };
+
+export type BidListLoadResult =
+  | { data: BidListResult; error?: never; code?: never }
+  | {
+      data?: never;
+      error: string;
+      code?: "statement_timeout";
+    };

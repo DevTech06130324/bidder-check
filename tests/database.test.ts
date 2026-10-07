@@ -277,6 +277,35 @@ it("validates a 476-row import against a profile with 10,000 retained bids withi
   await db.exec("reset role");
   await db.query("delete from public.bids where resume_id=$1 and company like 'Seed Company %'", [resume]);
 });
+it("evaluates the readable bid scope from trusted memberships and keeps list_bids invoker-scoped", async () => {
+  await asUser(bidder);
+  const scope = await db.query<{ workspace_id: string; bidder_id: string }>(
+    "select workspace_id,bidder_id from private.readable_bid_scope()",
+  );
+  expect(scope.rows).toEqual([{ workspace_id: workspace, bidder_id: bidder }]);
+  const policyScope = await db.query<{ workspace_id: string; bidder_id: string }>(
+    "select distinct b.workspace_id,b.bidder_id from public.bids b",
+  );
+  expect(policyScope.rows).toEqual([{ workspace_id: workspace, bidder_id: bidder }]);
+  expect((await db.query<{ allowed: boolean }>(
+    "select has_function_privilege('anon','private.readable_bid_scope()','execute') allowed",
+  )).rows[0].allowed).toBe(false);
+  expect((await db.query<{ allowed: boolean }>(
+    "select has_function_privilege('authenticated','private.readable_bid_scope()','execute') allowed",
+  )).rows[0].allowed).toBe(true);
+
+  await asUser(client);
+  const managedScope = await db.query<{ workspace_id: string; bidder_id: string }>(
+    "select workspace_id,bidder_id from private.readable_bid_scope()",
+  );
+  expect(managedScope.rows).toContainEqual({ workspace_id: workspace, bidder_id: bidder });
+  const listed = (await db.query<{ result: { total: number; rows: unknown[] } }>(
+    "select public.list_bids($1::jsonb) result",
+    [JSON.stringify({ trash: false, rangeFrom: null, rangeTo: null, pageIndex: 0, pageSize: 10, columnFilters: {}, search: "" })],
+  )).rows[0].result;
+  expect(listed.total).toBeGreaterThan(0);
+  expect(listed.rows.length).toBeLessThanOrEqual(10);
+});
 it("enforces profile-wide company limits and literal restrictions", async () => {
   await asUser(client);
   const profileId = (

@@ -8,7 +8,7 @@ import {
   chicagoDateRange,
 } from "@/lib/domain";
 import type { Database } from "@/lib/database.types";
-import type { BidListQuery, BidListResult } from "@/lib/bid-list";
+import type { BidListLoadResult, BidListQuery, BidListResult } from "@/lib/bid-list";
 import { createHash } from "node:crypto";
 import { fromZonedTime } from "date-fns-tz";
 import { z } from "zod";
@@ -653,12 +653,35 @@ export async function getBidRows(
   trash: boolean,
   bidderId: string | undefined,
   query: BidListQuery,
-) {
+): Promise<BidListLoadResult> {
   // Reads deliberately do not invalidate the route (thumbnail reads must not loop).
+  const startedAt = performance.now();
+  let diagnostic: {
+    dateMode: string;
+    trash: boolean;
+    pageIndex: number;
+    pageSize: number;
+    filterCount: number;
+    sortId: string;
+  } | undefined;
   try {
     const { supabase } = await getContext();
     const bounds = chicagoDateRange(mode, from, to);
     const filters = Object.fromEntries(query.columnFilters.map((filter) => [filter.id, filter.value]));
+    diagnostic = {
+      dateMode: ["today", "yesterday", "all", "custom"].includes(mode) ? mode : "other",
+      trash,
+      pageIndex: query.pageIndex,
+      pageSize: query.pageSize,
+      filterCount: query.columnFilters.length,
+      sortId: [
+        "found_at", "resume_id", "company", "role_name", "url", "bidder_id", "source",
+        "applied", "applied_at", "arrangement", "job_status", "review_status",
+        "interview_scheduled", "screenshot",
+      ].includes(query.sorting[0]?.id ?? "found_at")
+        ? query.sorting[0]?.id ?? "found_at"
+        : "other",
+    };
     const { data, error } = await supabase.rpc("list_bids", {
       p_query: {
         search: z.string().max(500).parse(query.search),
@@ -678,12 +701,37 @@ export async function getBidRows(
         scopeBidderId: bidderId ? z.uuid().parse(bidderId) : null,
       },
     });
-    if (error) throw new Error(error.message);
+    if (error) {
+      const timedOut = error.code === "57014";
+      console.info("Bid list query", {
+        ...diagnostic,
+        durationMs: Math.round(performance.now() - startedAt),
+        outcome: timedOut ? "statement_timeout" : "database_error",
+        errorCode: error.code ?? "unknown",
+      });
+      return {
+        error: timedOut
+          ? "This date range is taking too long to load. Your current results are still shown; please retry."
+          : "Could not load bids. Your current results are still shown; please retry.",
+        ...(timedOut ? { code: "statement_timeout" as const } : {}),
+      };
+    }
     const result = data as unknown as BidListResult;
+    console.info("Bid list query", {
+      ...diagnostic,
+      durationMs: Math.round(performance.now() - startedAt),
+      outcome: "success",
+    });
     return { data: result };
-  } catch (error) {
+  } catch {
+    console.info("Bid list query", {
+      ...diagnostic,
+      durationMs: Math.round(performance.now() - startedAt),
+      outcome: "request_error",
+      errorCode: "unknown",
+    });
     return {
-      error: error instanceof Error ? error.message : "Could not load bids",
+      error: "Could not load bids. Your current results are still shown; please retry.",
     };
   }
 }

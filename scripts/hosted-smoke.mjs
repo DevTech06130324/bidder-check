@@ -1241,6 +1241,32 @@ try {
   });
   for (let start = 0; start < seedRows.length; start += 1000)
     ok(await admin.from("bids").insert(seedRows.slice(start, start + 1000)));
+
+  const allDatesQuery = {
+    trash: false,
+    rangeFrom: null,
+    rangeTo: null,
+    pageIndex: 0,
+    pageSize: 10,
+    sorting: [{ id: "found_at", desc: true }],
+    columnFilters: {},
+    search: "",
+  };
+  const allDatesDurations = [];
+  for (let index = 0; index < 21; index++) {
+    const startedAt = performance.now();
+    const listed = ok(await bidder.rpc("list_bids", { p_query: allDatesQuery }));
+    allDatesDurations.push(performance.now() - startedAt);
+    assert.equal(listed.rows.length, 10);
+    assert.ok(listed.total >= 10_000);
+  }
+  const warmDurations = allDatesDurations.slice(1).sort((left, right) => left - right);
+  const p95Index = Math.ceil(warmDurations.length * 0.95) - 1;
+  console.log(
+    `BENCHMARK authenticated All dates listing: first=${Math.round(allDatesDurations[0])}ms, warm-p95=${Math.round(warmDurations[p95Index])}ms, requests=20`,
+  );
+  assert.ok(warmDurations[p95Index] < 2000, "All dates listing warm p95 must stay below two seconds");
+
   const addedDate = formatInTimeZone(new Date(), "America/Chicago", "yyyy-MM-dd");
   const benchmarkBatch = async (count) => {
     const rows = Array.from({ length: count }, (_, index) => ({
